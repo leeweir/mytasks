@@ -129,3 +129,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - `src/editor/`：CodeMirror 实时预览、图片、徽章和补全。
 - `src/app/`：任务库索引、编辑会话、冲突处理、视图和导出转换。
 - `src-tauri/src/`：文件系统与路径校验（`vault.rs`、`tracker.rs`）、FSEvents（`watcher.rs`）、系统通知、原生菜单与退出拦截（`menu.rs`、`quit.rs`）、导出（`export.rs`、`pdf.rs`）和 `vaultfile://` 协议。
+
+## 许可证
+
+[MIT](LICENSE)

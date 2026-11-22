@@ -146,3 +146,7 @@ During local testing the system returned `Notifications are not allowed for this
 - `src/editor/`: CodeMirror live preview, images, badges and completion.
 - `src/app/`: vault index, editing sessions, conflict handling, views and export conversion.
 - `src-tauri/src/`: file system and path checks (`vault.rs`, `tracker.rs`), FSEvents (`watcher.rs`), system notifications, the native menu and quit handling (`menu.rs`, `quit.rs`), export (`export.rs`, `pdf.rs`) and the `vaultfile://` protocol.
+
+## License
+
+[MIT](LICENSE)
