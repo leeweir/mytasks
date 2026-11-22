@@ -1,4 +1,4 @@
-import type { FieldKind, FieldToken, ParsedTask, Priority, TaskFields } from './types';
+import type { ExtraField, ExtraKind, FieldKind, FieldToken, ParsedTask, Priority, TaskFields } from './types';
 
 const TASK_RE = /^([ \t]*)([-*+]|\d{1,9}[.)])[ \t]+\[(.)\](?:[ \t]+(.*)|[ \t]*)$/u;
 
@@ -55,7 +55,18 @@ const FIELD_PATTERNS: { kind: FieldKind; re: RegExp }[] = [
   { kind: 'done', re: new RegExp(`✅${VS}[ \\t]*${DATE}$`, 'u') },
 ];
 
-const TAG_BODY = `[^\\s#!@$%^&*(),.?":{}|<>'\`~=+\\[\\]\\\\;，。！？、；：“”‘’（）【】《》🔺⏫🔼🔽⏬🔁⏰➕🛫⏳⌛📅📆🗓✅\\uFE0F]+`;
+/** Obsidian Tasks fields kept verbatim; they don't stop the backward field scan. */
+const EXTRA_PATTERNS: { kind: ExtraKind; re: RegExp }[] = [
+  { kind: 'id', re: new RegExp(`🆔${VS}[ \\t]*[a-zA-Z0-9_-]+$`, 'u') },
+  { kind: 'dependsOn', re: new RegExp(`⛔${VS}[ \\t]*[a-zA-Z0-9_-]+(?:[ \\t]*,[ \\t]*[a-zA-Z0-9_-]+)*$`, 'u') },
+  { kind: 'onCompletion', re: new RegExp(`🏁${VS}[ \\t]*[a-zA-Z]+$`, 'u') },
+  { kind: 'cancelledDate', re: new RegExp(`❌${VS}[ \\t]*\\d{4}-\\d{2}-\\d{2}$`, 'u') },
+];
+
+/** Trailing Obsidian block reference ('^id'), which must stay at the very end of the line. */
+const BLOCK_ID_RE = /(?:^|[ \t])\^([A-Za-z0-9-]+)[ \t]*$/;
+
+const TAG_BODY = `[^\\s#!@$%^&*(),.?":{}|<>'\`~=+\\[\\]\\\\;，。！？、；：“”‘’（）【】《》🔺⏫🔼🔽⏬🔁⏰➕🛫⏳⌛📅📆🗓✅🆔⛔🏁❌\\uFE0F]+`;
 const TAG_AT_END_RE = new RegExp(`(?:^|(?<=\\s))#(${TAG_BODY})$`, 'u');
 const TAG_GLOBAL_RE = new RegExp(`(?<=^|\\s)#(${TAG_BODY})`, 'gu');
 const HAS_NON_DIGIT = /[^0-9]/;
@@ -74,21 +85,25 @@ function analyze(line: string): Analysis | null {
   const content = m[4] ?? '';
   const contentStart = line.length - content.length;
 
-  const tokens: FieldToken[] = [];
-  const trailingTags: string[] = [];
-  const seen: Partial<Record<FieldKind, true>> = {};
-  let end = content.length;
+  const bm = BLOCK_ID_RE.exec(content);
+  const blockId = bm ? bm[1] : undefined;
+  const scanned = bm ? content.slice(0, bm.index) : content;
 
-  for (;;) {
-    while (end > 0 && (content[end - 1] === ' ' || content[end - 1] === '\t')) end--;
-    const head = content.slice(0, end);
-    let matched = false;
+  const tokens: FieldToken[] = [];
+  const extras: ExtraField[] = [];
+  const trailingTags: string[] = [];
+  const seen = new Set<FieldKind | ExtraKind>();
+  let end = scanned.length;
+
+  scan: for (;;) {
+    while (end > 0 && (scanned[end - 1] === ' ' || scanned[end - 1] === '\t')) end--;
+    const head = scanned.slice(0, end);
     for (const { kind, re } of FIELD_PATTERNS) {
       const fm = re.exec(head);
       if (!fm) continue;
       // A repeated field ends the trailing region: the earlier copy stays in the description.
-      if (seen[kind]) break;
-      seen[kind] = true;
+      if (seen.has(kind)) break scan;
+      seen.add(kind);
       tokens.push({
         kind,
         from: contentStart + fm.index,
@@ -96,23 +111,29 @@ function analyze(line: string): Analysis | null {
         value: fm[1].replace(/[ \t]+/g, ' ').trim(),
       });
       end = fm.index;
-      matched = true;
-      break;
+      continue scan;
     }
-    if (!matched) {
-      const tm = TAG_AT_END_RE.exec(head);
-      if (!tm || !HAS_NON_DIGIT.test(tm[1])) break;
-      trailingTags.unshift(tm[0]);
-      end = tm.index;
+    for (const { kind, re } of EXTRA_PATTERNS) {
+      const em = re.exec(head);
+      if (!em) continue;
+      if (seen.has(kind)) break scan;
+      seen.add(kind);
+      extras.unshift({ kind, raw: em[0] });
+      end = em.index;
+      continue scan;
     }
+    const tm = TAG_AT_END_RE.exec(head);
+    if (!tm || !HAS_NON_DIGIT.test(tm[1])) break;
+    trailingTags.unshift(tm[0]);
+    end = tm.index;
   }
 
   let description: string;
-  if (tokens.length === 0) {
-    description = content.replace(/[ \t]+$/, '');
+  if (tokens.length === 0 && extras.length === 0) {
+    description = scanned.replace(/[ \t]+$/, '');
   } else {
     // Tags interleaved with fields belong to the description (Obsidian semantics).
-    description = [content.slice(0, end), ...trailingTags].filter((s) => s.length > 0).join(' ');
+    description = [scanned.slice(0, end), ...trailingTags].filter((s) => s.length > 0).join(' ');
   }
 
   const fields: TaskFields = {};
@@ -125,19 +146,19 @@ function analyze(line: string): Analysis | null {
   }
   tokens.sort((a, b) => a.from - b.from);
 
-  return {
-    task: {
-      indent,
-      bullet,
-      status,
-      checked: status === 'x' || status === 'X',
-      description,
-      tags: extractTags(description),
-      fields,
-    },
-    tokens,
-    contentStart,
+  const task: ParsedTask = {
+    indent,
+    bullet,
+    status,
+    checked: status === 'x' || status === 'X',
+    cancelled: status === '-',
+    description,
+    tags: extractTags(description),
+    fields,
   };
+  if (extras.length > 0) task.extras = extras;
+  if (blockId !== undefined) task.blockId = blockId;
+  return { task, tokens, contentStart };
 }
 
 function extractTags(text: string): string[] {
@@ -152,7 +173,15 @@ export function parseTaskLine(line: string): ParsedTask | null {
   return analyze(line)?.task ?? null;
 }
 
-/** Serializes a task: description followed by fields in canonical order. */
+/** Open = neither done (`[x]`) nor cancelled (`[-]`). */
+export function isOpenTask(t: ParsedTask): boolean {
+  return !t.checked && !t.cancelled;
+}
+
+/**
+ * Serializes a task: description, fields in canonical order, kept Obsidian fields
+ * (🆔 ⛔ 🏁 ❌, verbatim), then the block id.
+ */
 export function formatTaskLine(t: ParsedTask): string {
   const parts: string[] = [];
   const description = t.description.trim();
@@ -166,6 +195,8 @@ export function formatTaskLine(t: ParsedTask): string {
       parts.push(`${FIELD_EMOJI[kind]} ${value}`);
     }
   }
+  for (const extra of t.extras ?? []) parts.push(extra.raw);
+  if (t.blockId) parts.push(`^${t.blockId}`);
   const head = `${t.indent}${t.bullet} [${t.status}]`;
   return parts.length > 0 ? `${head} ${parts.join(' ')}` : head;
 }

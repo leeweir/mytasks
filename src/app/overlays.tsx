@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import type { SaveError } from "./session";
+import { isValidName } from "./text";
 
 export function PromptDialog({
   title,
@@ -18,7 +20,7 @@ export function PromptDialog({
   const [value, setValue] = useState(initial);
   const ref = useRef<HTMLInputElement>(null);
   useEffect(() => ref.current?.select(), []);
-  const valid = value.trim() !== "" && !/[/\\:]/.test(value.trim());
+  const valid = isValidName(value.trim());
   return (
     <div className="backdrop" onMouseDown={(e) => e.target === e.currentTarget && onCancel()}>
       <form
@@ -106,6 +108,30 @@ export function ContextMenu({ x, y, items, onClose }: { x: number; y: number; it
         >
           {it.label}
         </button>
+      ))}
+    </div>
+  );
+}
+
+/** Persistent bar under the main top bar until each failed save is retried, copied out, or discarded. */
+export function SaveErrorBar({ errors, onRetry, onSaveCopy, onDiscard }: {
+  errors: readonly SaveError[];
+  onRetry(path: string): void;
+  onSaveCopy(path: string): void;
+  onDiscard(path: string): void;
+}) {
+  if (!errors.length) return null;
+  return (
+    <div className="save-errors" role="alert">
+      {errors.map((e) => (
+        <div key={e.path} className="toast save-error">
+          <span className="save-error-text">
+            “{e.path.split("/").pop()}” 保存失败，修改仍在内存中：{e.message}
+          </span>
+          <button onClick={() => onRetry(e.path)}>重试</button>
+          <button onClick={() => onSaveCopy(e.path)}>另存副本…</button>
+          <button className="danger" onClick={() => onDiscard(e.path)}>放弃本地修改</button>
+        </div>
       ))}
     </div>
   );

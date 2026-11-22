@@ -1,5 +1,6 @@
 import { EditorView, WidgetType } from '@codemirror/view';
 import MarkdownIt from 'markdown-it';
+import { normalizeHref } from './format';
 import type { PreviewConfig } from './widgets';
 
 interface CellRenderEnv {
@@ -14,14 +15,7 @@ md.renderer.rules.image = (tokens, idx, options, env, self) => {
   const attr = token.attrGet('src');
   const resolve = (env as CellRenderEnv | undefined)?.resolveImage;
   if (attr !== null && resolve) {
-    const src = String(attr);
-    let raw = src;
-    try {
-      raw = decodeURI(src);
-    } catch {
-      // Malformed escapes: hand the encoded form to the resolver.
-    }
-    const resolved = resolve(raw);
+    const resolved = resolve(String(attr));
     if (resolved) token.attrSet('src', resolved);
   }
   return renderImage(tokens, idx, options, env, self);
@@ -128,7 +122,7 @@ export class TableWidget extends WidgetType {
       const target = e.target as HTMLElement;
       const href = target.closest('a')?.getAttribute('href');
       if (href) {
-        this.cfg.onOpenLink(href);
+        this.cfg.onOpenLink(normalizeHref(href));
         return;
       }
       const cell = target.closest<HTMLElement>('[data-off]');

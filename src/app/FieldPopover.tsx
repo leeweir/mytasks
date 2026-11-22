@@ -1,25 +1,29 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { addDays, parseTaskLine, suggest, todayISO, type FieldKind, type FieldPatch, type Priority } from "../core";
 import { PRIORITY_META } from "./format";
-import { patchFields } from "./session";
+import { Icon } from "./icons";
+import { documentText, patchFields } from "./session";
+import { lineText } from "./text";
 import { vault } from "./vault";
 
 export interface FieldTarget {
   path: string;
   line: number;
+  /** The task's line text when the popover opened; edits abort if the line has changed. */
+  raw: string;
   kind: FieldKind;
   rect: DOMRect;
 }
 
 const TITLES: Record<FieldKind, string> = {
-  due: "📅 截止日期",
-  reminder: "⏰ 提醒",
+  due: "截止日期",
+  reminder: "提醒",
   priority: "优先级",
-  recurrence: "🔁 重复",
-  done: "✅ 完成日期",
-  start: "🛫 开始日期",
-  scheduled: "⏳ 计划日期",
-  created: "➕ 创建日期",
+  recurrence: "重复",
+  done: "完成日期",
+  start: "开始日期",
+  scheduled: "计划日期",
+  created: "创建日期",
 };
 
 function nextMonday(today: string): string {
@@ -30,8 +34,10 @@ function nextMonday(today: string): string {
 export function FieldPopover({ target, onClose }: { target: FieldTarget; onClose: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ left: target.rect.left, top: target.rect.bottom + 6 });
-  const content = vault.get().files.get(target.path)?.content ?? "";
-  const task = parseTaskLine(content.split("\n")[target.line] ?? "");
+  // Re-render on index updates so a task that moved or changed is reported instead of patched.
+  useSyncExternalStore(vault.subscribe, vault.get);
+  const stale = lineText(documentText(target.path) ?? "", target.line) !== target.raw;
+  const task = parseTaskLine(target.raw);
   const current = task?.fields[target.kind];
   const today = todayISO(new Date());
   const [text, setText] = useState(typeof current === "string" ? current : "");
@@ -62,7 +68,7 @@ export function FieldPopover({ target, onClose }: { target: FieldTarget; onClose
   }, [onClose]);
 
   const apply = (patch: FieldPatch) => {
-    void patchFields(target.path, target.line, patch).catch(() => undefined);
+    void patchFields(target.path, target.line, patch, target.raw).catch(() => undefined);
     onClose();
   };
   const set = (value: string | null) => apply({ [target.kind]: value } as FieldPatch);
@@ -72,8 +78,9 @@ export function FieldPopover({ target, onClose }: { target: FieldTarget; onClose
     body = (
       <div className="pop-grid">
         {(Object.keys(PRIORITY_META) as Priority[]).map((p) => (
-          <button key={p} className={current === p ? "on" : ""} onClick={() => set(p)}>
-            {PRIORITY_META[p].emoji} {PRIORITY_META[p].label}
+          <button key={p} className={`prio${current === p ? " on" : ""}`} data-priority={p} onClick={() => set(p)}>
+            <Icon name="flag" size={12} />
+            {PRIORITY_META[p].label}
           </button>
         ))}
         <button onClick={() => set(null)}>无</button>
@@ -167,7 +174,7 @@ export function FieldPopover({ target, onClose }: { target: FieldTarget; onClose
   return (
     <div ref={ref} className="popover" style={{ left: pos.left, top: pos.top }}>
       <div className="pop-title">{TITLES[target.kind]}</div>
-      {task ? body : <div className="muted">任务已不存在</div>}
+      {task && !stale ? body : <div className="muted">任务已变化或已不存在</div>}
     </div>
   );
 }

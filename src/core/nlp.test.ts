@@ -211,3 +211,42 @@ describe('suggest: prefixes and defaults', () => {
     expect(new Set(list).size).toBe(list.length);
   });
 });
+
+describe('suggest: first reminder of rules without a fixed day', () => {
+  // NOW is Saturday 2026-10-03 10:30.
+  test.each([
+    ['每周 9点', '🔁 every week ⏰ 2026-10-10 09:00'], // 09:00 passed → next week
+    ['every week 11am', '🔁 every week ⏰ 2026-10-03 11:00'],
+    ['每月 11点', '🔁 every month ⏰ 2026-10-03 11:00'],
+    ['每月 9点', '🔁 every month ⏰ 2026-11-03 09:00'],
+    ['每年 提醒', '🔁 every year ⏰ 2027-10-03 09:00'],
+    ['每3天 下午3点', '🔁 every 3 days ⏰ 2026-10-03 15:00'],
+    ['每月15号 9点', '🔁 every month on the 15th ⏰ 2026-10-15 09:00'],
+  ])('%s', (q, insert) => {
+    expect(first(q).insert).toBe(insert);
+  });
+});
+
+describe('suggest: ambiguities', () => {
+  test('晚上/夜里 12点 is the following midnight', () => {
+    expect(first('晚上12点').insert).toBe('⏰ 2026-10-04 00:00');
+    expect(first('夜里12点').insert).toBe('⏰ 2026-10-04 00:00');
+    expect(first('明天晚上12点').insert).toBe('⏰ 2026-10-05 00:00');
+    expect(first('明晚12点').insert).toBe('⏰ 2026-10-05 00:00');
+    expect(first('晚上11点').insert).toBe('⏰ 2026-10-03 23:00');
+    expect(first('中午12点').insert).toBe('⏰ 2026-10-03 12:00');
+  });
+
+  test('Feb 29 rolls to the next leap year', () => {
+    expect(first('2/29').insert).toBe('📅 2028-02-29');
+    expect(first('2月29日').insert).toBe('📅 2028-02-29');
+    expect(suggest('2027-02-29', NOW)).toEqual([]);
+  });
+
+  test('weekend and 周末 agree on a Sunday', () => {
+    const sunday = new Date(2026, 9, 4, 10, 0);
+    expect(suggest('weekend', sunday)[0].insert).toBe('📅 2026-10-04');
+    expect(suggest('周末', sunday)[0].insert).toBe('📅 2026-10-04');
+    expect(first('weekend').insert).toBe('📅 2026-10-03');
+  });
+});

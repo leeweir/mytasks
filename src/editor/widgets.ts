@@ -1,11 +1,11 @@
 import { EditorView, WidgetType } from '@codemirror/view';
-import type { FieldKind } from '../core';
+import type { FieldKind, Priority } from '../core';
 
 /** Callbacks and services the live preview needs from the host. */
 export interface PreviewConfig {
   resolveImage(src: string): string | null;
   onToggleRequest(line: number): void;
-  onBadgeClick(line: number, kind: FieldKind, rect: DOMRect): void;
+  onBadgeClick(line: number, lineText: string, kind: FieldKind, rect: DOMRect): void;
   onOpenLink(href: string): void;
   now(): Date;
 }
@@ -17,26 +17,50 @@ function lineOfDom(view: EditorView, dom: HTMLElement): number | null {
   return view.state.doc.lineAt(pos).number - 1;
 }
 
+/** Checkbox ring tone per priority; shared with the app's task rows (`.p-high` etc.). */
+const PRIORITY_RING: Record<Priority, string> = {
+  highest: 'p-high',
+  high: 'p-high',
+  medium: 'p-medium',
+  low: 'p-low',
+  lowest: 'p-low',
+};
+
+/** Time of the last checkbox click; the next checked box built shortly after plays the completion pop once. */
+let popRequestedAt = -Infinity;
+
 export class CheckboxWidget extends WidgetType {
-  constructor(readonly checked: boolean, readonly cfg: PreviewConfig) {
+  constructor(
+    readonly checked: boolean,
+    readonly cancelled: boolean,
+    readonly priority: Priority | undefined,
+    readonly cfg: PreviewConfig,
+  ) {
     super();
   }
 
   eq(other: CheckboxWidget): boolean {
-    return other.checked === this.checked;
+    return other.checked === this.checked && other.cancelled === this.cancelled && other.priority === this.priority;
   }
 
   toDOM(view: EditorView): HTMLElement {
     const box = document.createElement('input');
     box.type = 'checkbox';
     box.className = 'cm-md-checkbox';
+    if (this.priority) box.classList.add(PRIORITY_RING[this.priority]);
+    if (this.cancelled) box.classList.add('is-cancelled');
+    if (this.checked && performance.now() - popRequestedAt < 1500) {
+      box.classList.add('is-popping');
+      popRequestedAt = -Infinity;
+    }
     box.checked = this.checked;
     box.tabIndex = -1;
-    box.setAttribute('aria-label', this.checked ? '标记为未完成' : '标记为完成');
+    box.setAttribute('aria-label', this.cancelled ? '重新打开任务' : this.checked ? '标记为未完成' : '标记为完成');
     // Keep focus and selection where they are: the host performs the toggle.
     box.addEventListener('mousedown', (e) => e.preventDefault());
     box.addEventListener('click', (e) => {
       e.preventDefault();
+      popRequestedAt = performance.now();
       const line = lineOfDom(view, box);
       if (line !== null) this.cfg.onToggleRequest(line);
     });
@@ -125,13 +149,16 @@ export class BadgeWidget extends WidgetType {
   toDOM(view: EditorView): HTMLElement {
     const span = document.createElement('span');
     span.className = `cm-md-badge cm-md-badge-${this.kind}${this.state ? ' ' + this.state : ''}`;
+    span.dataset.kind = this.kind;
     span.textContent = this.text;
     span.setAttribute('role', 'button');
     span.addEventListener('mousedown', (e) => e.preventDefault());
     span.addEventListener('click', (e) => {
       e.preventDefault();
-      const line = lineOfDom(view, span);
-      if (line !== null) this.cfg.onBadgeClick(line, this.kind, span.getBoundingClientRect());
+      if (!span.isConnected) return;
+      const pos = view.posAtDOM(span);
+      const lineObj = view.state.doc.lineAt(pos);
+      this.cfg.onBadgeClick(lineObj.number - 1, lineObj.text, this.kind, span.getBoundingClientRect());
     });
     return span;
   }

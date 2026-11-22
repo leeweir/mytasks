@@ -3,6 +3,9 @@
 use tauri::menu::{AboutMetadata, Menu, MenuEvent, MenuItem, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Runtime};
 
+/// Quit menu item; handled natively, not forwarded to the frontend.
+const QUIT_ID: &str = "quit";
+
 /// Ids of custom items forwarded to the frontend (must match `MenuId` in src/backend.ts).
 const MENU_IDS: &[&str] = &[
     "new-list",
@@ -39,7 +42,8 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .hide_others()
         .show_all()
         .separator()
-        .quit()
+        // Not the predefined Quit: that sends `terminate:` and skips the pending-save flush.
+        .item(&item(app, QUIT_ID, "Quit Tasks", Some("CmdOrCtrl+Q"))?)
         .build()?;
 
     let file = SubmenuBuilder::new(app, "File")
@@ -89,7 +93,10 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
 
 pub fn handle_event<R: Runtime>(app: &AppHandle<R>, event: MenuEvent) {
     let id = event.id().as_ref();
-    if MENU_IDS.contains(&id) {
+    if id == QUIT_ID {
+        // Goes through `RunEvent::ExitRequested`, which flushes pending saves first.
+        app.exit(0);
+    } else if MENU_IDS.contains(&id) {
         if let Err(e) = app.emit("menu", id) {
             eprintln!("tasks: cannot emit menu event {id}: {e}");
         }

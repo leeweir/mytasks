@@ -203,3 +203,56 @@ describe('pendingReminders', () => {
   });
 });
 
+
+describe('fenced code and CRLF', () => {
+  test('indexFile skips task lines inside fenced code', () => {
+    const text = '- [ ] real\n```md\n- [ ] example ⏰ 2026-11-23 09:00 📅 2026-10-05\n```\n~~~\n- [ ] also\n~~~';
+    const tasks = indexFile('/x.md', text);
+    expect(tasks.map((t) => t.task.description)).toEqual(['real']);
+    expect(todayTasks(tasks, '2026-11-22')).toHaveLength(0);
+    expect(pendingReminders(tasks, new Date(2026, 10, 22))).toHaveLength(0);
+  });
+
+  test('indexFile on CRLF text gives clean raw lines', () => {
+    const tasks = indexFile('/x.md', '- [ ] A 📅 2026-10-05\r\n  - [ ] B\r\n');
+    expect(tasks.map((t) => [t.line, t.raw, t.depth])).toEqual([
+      [0, '- [ ] A 📅 2026-10-05', 0],
+      [1, '  - [ ] B', 1],
+    ]);
+    expect(tasks[0].task.fields.due).toBe('2026-10-05');
+  });
+});
+
+describe('cancelled tasks are not open', () => {
+  const tasks = indexFile(
+    '/x.md',
+    '- [-] old #work 📅 2026-01-01\n- [-] soon 📅 2026-11-24\n- [-] ping ⏰ 2026-11-23 10:00\n- [ ] live #work',
+  );
+
+  test('excluded from today, upcoming, reminders and tags', () => {
+    expect(todayTasks(tasks, '2026-11-22')).toHaveLength(0);
+    expect(upcomingTasks(tasks, '2026-11-22')).toEqual([]);
+    expect(pendingReminders(tasks, new Date(2026, 10, 22))).toEqual([]);
+    expect(tagTasks(tasks, 'work').map((t) => t.task.description)).toEqual(['live #work']);
+    expect(allTags(tasks)).toEqual([{ tag: 'work', count: 1 }]);
+  });
+});
+
+describe('reminder-only tasks', () => {
+  test('a past reminder without due date stays in Today', () => {
+    const tasks = indexFile('/x.md', '- [ ] call ⏰ 2026-11-21 15:00\n- [ ] later ⏰ 2026-11-25 09:00');
+    expect(todayTasks(tasks, '2026-11-22').map((t) => t.task.description)).toEqual(['call']);
+  });
+
+  test('a past reminder does not pull in a task due in the future', () => {
+    const tasks = indexFile('/x.md', '- [ ] t ⏰ 2026-11-21 15:00 📅 2026-11-30');
+    expect(todayTasks(tasks, '2026-11-22')).toHaveLength(0);
+  });
+});
+
+describe('allTags counts open tasks only', () => {
+  test('checked and archived tasks are not counted', () => {
+    const tasks = indexFile('/x.md', '- [ ] a #work\n- [x] b #work\n- [x] c #home\n\n## Done\n- [x] d #work');
+    expect(allTags(tasks)).toEqual([{ tag: 'work', count: 1 }]);
+  });
+});

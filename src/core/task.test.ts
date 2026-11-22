@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { parseTaskLine, formatTaskLine, fieldTokens, tagRanges } from './task';
+import { parseTaskLine, formatTaskLine, fieldTokens, tagRanges, isOpenTask } from './task';
 
 describe('parseTaskLine', () => {
   test('basic checkbox', () => {
@@ -166,5 +166,54 @@ describe('tagRanges', () => {
     const ranges = tagRanges('Text #tag');
     expect(ranges).toHaveLength(1);
     expect(ranges[0].tag).toBe('tag');
+  });
+});
+
+describe('cancelled status', () => {
+  test('[-] is cancelled, not checked', () => {
+    expect(parseTaskLine('- [-] Dropped')).toMatchObject({ checked: false, cancelled: true });
+    expect(parseTaskLine('- [x] Done')).toMatchObject({ checked: true, cancelled: false });
+    expect(parseTaskLine('- [ ] Open')).toMatchObject({ checked: false, cancelled: false });
+  });
+
+  test('isOpenTask', () => {
+    expect(isOpenTask(parseTaskLine('- [ ] a')!)).toBe(true);
+    expect(isOpenTask(parseTaskLine('- [/] a')!)).toBe(true);
+    expect(isOpenTask(parseTaskLine('- [x] a')!)).toBe(false);
+    expect(isOpenTask(parseTaskLine('- [-] a')!)).toBe(false);
+  });
+});
+
+describe('block ids and kept Obsidian fields', () => {
+  test('a trailing ^block-id does not hide fields', () => {
+    const t = parseTaskLine('- [ ] Task 📅 2026-10-05 ^abc-123');
+    expect(t?.fields).toEqual({ due: '2026-10-05' });
+    expect(t?.blockId).toBe('abc-123');
+    expect(t?.description).toBe('Task');
+  });
+
+  test('block id on a task without fields', () => {
+    const t = parseTaskLine('- [ ] Task ^b1')!;
+    expect(t.description).toBe('Task');
+    expect(formatTaskLine({ ...t, fields: { due: '2026-10-05' } })).toBe('- [ ] Task 📅 2026-10-05 ^b1');
+  });
+
+  test('a caret inside a word is not a block id', () => {
+    expect(parseTaskLine('- [ ] x^2')?.blockId).toBeUndefined();
+  });
+
+  test('🆔 ⛔ 🏁 ❌ do not stop the field scan and round-trip verbatim', () => {
+    const raw = '- [ ] T 🔁 every day 🏁 delete 📅 2026-10-05 🆔 abc ⛔ x1, y2 ❌ 2026-10-01';
+    const t = parseTaskLine(raw)!;
+    expect(t.fields).toEqual({ recurrence: 'every day', due: '2026-10-05' });
+    expect(t.description).toBe('T');
+    expect(t.extras?.map((e) => e.raw)).toEqual(['🏁 delete', '🆔 abc', '⛔ x1, y2', '❌ 2026-10-01']);
+    expect(formatTaskLine(t)).toBe('- [ ] T 🔁 every day 📅 2026-10-05 🏁 delete 🆔 abc ⛔ x1, y2 ❌ 2026-10-01');
+  });
+
+  test('field token offsets account for the block id', () => {
+    const line = '- [ ] T 📅 2026-10-05 ^id';
+    const [tok] = fieldTokens(line);
+    expect(line.slice(tok.from, tok.to)).toBe('📅 2026-10-05');
   });
 });

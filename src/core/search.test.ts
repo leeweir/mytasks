@@ -63,3 +63,37 @@ describe('searchVault', () => {
     expect(searchVault(files, '')).toHaveLength(0);
   });
 });
+
+describe('searchVault: line numbers and caching', () => {
+  test('line numbers and text in LF and CRLF files', () => {
+    const files = [
+      { path: '/a.md', content: 'one\ntwo Foo\nthree\nfoo four' },
+      { path: '/b.md', content: 'x\r\nFOO y\r\n\r\nz foo\r\n' },
+    ];
+    expect(searchVault(files, 'foo').map((h) => [h.path, h.line, h.text, h.matches])).toEqual([
+      ['/a.md', 1, 'two Foo', [[4, 7]]],
+      ['/a.md', 3, 'foo four', [[0, 3]]],
+      ['/b.md', 1, 'FOO y', [[0, 3]]],
+      ['/b.md', 3, 'z foo', [[2, 5]]],
+    ]);
+  });
+
+  test('all terms on one line, first term found on several lines', () => {
+    const files = [{ path: '/a.md', content: 'alpha\nalpha beta\nbeta alpha alpha' }];
+    expect(searchVault(files, 'alpha beta').map((h) => h.line)).toEqual([1, 2]);
+  });
+
+  test('changed content is searched afresh', () => {
+    expect(searchVault([{ path: '/a.md', content: 'old text' }], 'new')).toEqual([]);
+    expect(searchVault([{ path: '/a.md', content: 'new text' }], 'new').map((h) => h.line)).toEqual([0]);
+  });
+
+  test('files where lower-casing changes length still report correct lines', () => {
+    const hits = searchVault([{ path: '/a.md', content: 'İstanbul\nfoo bar\nİ bar' }], 'bar');
+    // Ranges are exact only on lines whose lower-casing keeps their length.
+    expect(hits.map((h) => [h.line, h.text, h.matches])).toEqual([
+      [1, 'foo bar', [[4, 7]]],
+      [2, 'İ bar', []],
+    ]);
+  });
+});

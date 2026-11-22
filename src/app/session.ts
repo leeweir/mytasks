@@ -1,35 +1,50 @@
-import { readFile, writeFile } from "../backend";
-import { applyEdits, archiveTask, setTaskFields, toggleTask, type FieldPatch, type TaskIdentity, type TextEdit } from "../core";
+import { isConflictError, readFile, writeFile } from "../backend";
+import { applyEdits, archiveTask, RecurrenceError, setTaskFields, splitLines, toggleTask, type FieldPatch, type TaskIdentity, type TextEdit } from "../core";
 import type { EditorHandle } from "../editor";
-import { vault, type VaultFile } from "./vault";
+import { vault } from "./vault";
 import { toast } from "./toast";
+import { assertLine, detectEol, fromLF, lineText, StaleTaskError, toLF, type Eol } from "./text";
 
 const AUTOSAVE_MS = 1000;
+const INDEX_DELAY_MS = 200;
 const ARCHIVE_DELAY_MS = 3000;
 
 export interface DiskConflict {
   path: string;
-  /** null means the file was deleted, not an empty document. */
+  /** Exact disk text; null means the file was deleted, not an empty document. */
   disk: string | null;
 }
 
+/**
+ * Documents are LF-only in memory (editor, index, core). `disk` is the exact text last read
+ * from or written to disk and is the `expected` baseline for the next write.
+ */
 interface DocumentBuffer {
   path: string;
   doc: string;
+  /** LF form of the disk baseline; null = file absent. */
   saved: string | null;
+  /** Exact disk text of the baseline; undefined = not read yet; null = absent, user chose to (re)create. */
+  disk: string | null | undefined;
+  eol: Eol;
   handle: EditorHandle | null;
   timer: number | undefined;
+  indexTimer: number | undefined;
   conflict: DiskConflict | null;
   error: string | null;
   replacing: boolean;
 }
 
 type Session = DocumentBuffer & { handle: EditorHandle };
-interface SessionStatus {
+
+export interface SaveError {
+  path: string;
+  message: string;
+}
+
+export interface SessionStatus {
   conflicts: readonly DiskConflict[];
-  errors: readonly { path: string; message: string }[];
-  dirty: boolean;
-  saving: boolean;
+  errors: readonly SaveError[];
 }
 
 // Buffers outlive editors: a failed cleanup save must never discard the only local copy.
@@ -37,8 +52,7 @@ const buffers = new Map<string, DocumentBuffer>();
 const chains = new Map<string, Promise<unknown>>();
 const listeners = new Set<() => void>();
 let session: Session | null = null;
-let saving = 0;
-let status: SessionStatus = { conflicts: [], errors: [], dirty: false, saving: false };
+let status: SessionStatus = { conflicts: [], errors: [] };
 
 export const sessionStatus = {
   get: () => status,
@@ -48,14 +62,22 @@ export const sessionStatus = {
   },
 };
 
+function sameStatus(a: SessionStatus, b: SessionStatus): boolean {
+  return a.conflicts.length === b.conflicts.length
+    && a.conflicts.every((c, i) => c === b.conflicts[i])
+    && a.errors.length === b.errors.length
+    && a.errors.every((e, i) => e.path === b.errors[i].path && e.message === b.errors[i].message);
+}
+
+/** Keeps the previous snapshot when nothing visible changed, so subscribers do not re-render. */
 function publish() {
   const docs = [...buffers.values()];
-  status = {
+  const next: SessionStatus = {
     conflicts: docs.flatMap((s) => s.conflict ? [s.conflict] : []),
     errors: docs.flatMap((s) => s.error ? [{ path: s.path, message: s.error }] : []),
-    dirty: docs.some((s) => s.doc !== s.saved),
-    saving: saving > 0,
   };
+  if (sameStatus(status, next)) return;
+  status = next;
   for (const listener of listeners) listener();
 }
 
@@ -72,16 +94,46 @@ function stopAutosave(s: DocumentBuffer) {
   s.timer = undefined;
 }
 
-function releaseClean(s: DocumentBuffer) {
-  if (!s.handle && !s.conflict && s.doc === s.saved && buffers.get(s.path) === s) buffers.delete(s.path);
+/** Publishes the buffer to the task index now instead of after the typing debounce. */
+function syncIndex(s: DocumentBuffer) {
+  window.clearTimeout(s.indexTimer);
+  s.indexTimer = undefined;
+  if (buffers.get(s.path) === s) vault.setContent(s.path, s.doc);
 }
 
-function newBuffer(path: string, content: string): DocumentBuffer {
-  const s: DocumentBuffer = { path, doc: content, saved: content, handle: null, timer: undefined, conflict: null, error: null, replacing: false };
+function releaseClean(s: DocumentBuffer) {
+  if (!s.handle && !s.conflict && !s.error && s.doc === s.saved && buffers.get(s.path) === s) {
+    syncIndex(s);
+    buffers.delete(s.path);
+  }
+}
+
+function dropBuffer(s: DocumentBuffer) {
+  stopAutosave(s);
+  window.clearTimeout(s.indexTimer);
+  cancelArchives(s.path);
+  if (buffers.get(s.path) === s) buffers.delete(s.path);
+  if (session === s) session = null;
+  s.handle = null;
+  publish();
+}
+
+function setDisk(s: DocumentBuffer, disk: string | null) {
+  s.disk = disk;
+  if (disk !== null) s.eol = detectEol(disk);
+}
+
+function newBuffer(path: string, doc: string, disk: string | undefined): DocumentBuffer {
+  const s: DocumentBuffer = {
+    path, doc, saved: doc, disk, eol: "\n", handle: null, timer: undefined, indexTimer: undefined,
+    conflict: null, error: null, replacing: false,
+  };
+  if (disk !== undefined) s.eol = detectEol(disk);
   buffers.set(path, s);
   return s;
 }
 
+/** `saved` is the LF document the editor was created with (the indexed file content). */
 export function openSession(path: string, handle: EditorHandle, saved: string) {
   if (session && session.handle !== handle) {
     const previous: DocumentBuffer = session;
@@ -89,11 +141,11 @@ export function openSession(path: string, handle: EditorHandle, saved: string) {
     session = null;
     releaseClean(previous);
   }
-  const s = buffers.get(path) ?? newBuffer(path, saved);
+  const s = buffers.get(path) ?? newBuffer(path, saved, undefined);
   s.handle = handle;
   session = s as Session;
   if (handle.getDoc() !== s.doc) replaceEditor(s);
-  vault.setContent(path, s.doc);
+  syncIndex(s);
   publish();
 }
 
@@ -123,17 +175,14 @@ export function currentSession(): Readonly<Session> | null {
   return session;
 }
 
-export function isDirty(): boolean {
-  return !!session && session.doc !== session.saved;
-}
-
 /** Editor onChange hook: retain the latest document independently of the editor's lifetime. */
 export function noteEdited(path: string, doc: string) {
   const s = session;
   if (!s || s.path !== path || s.replacing) return;
   trackArchives(path, s.doc, doc);
   s.doc = doc;
-  vault.setContent(path, doc);
+  window.clearTimeout(s.indexTimer);
+  s.indexTimer = window.setTimeout(() => syncIndex(s), INDEX_DELAY_MS);
   stopAutosave(s);
   if (!s.conflict && s.doc !== s.saved) {
     s.timer = window.setTimeout(() => { void flushBuffer(s).catch(() => undefined); }, AUTOSAVE_MS);
@@ -165,38 +214,54 @@ function conflictWith(s: DocumentBuffer, disk: string | null) {
 
 function reportFailure(s: DocumentBuffer, e: unknown) {
   if (e instanceof ConflictError) return;
-  const message = String(e);
-  if (s.error !== message) {
-    toast.show({
-      text: `保存失败，修改仍保留：${message}`,
-      action: { label: "重试", run: () => { void flushBuffer(s).catch(() => undefined); } },
-    });
-  }
-  s.error = message;
+  s.error = String(e);
   publish();
 }
 
-/** Runs only inside the path queue. Every write checks the disk baseline first. */
+/**
+ * Confirms the write baseline against the disk. Returns true when the disk already holds
+ * the buffer's document, so nothing is left to write.
+ */
+async function rebaseline(s: DocumentBuffer): Promise<boolean> {
+  const disk = await diskContent(s.path);
+  if (s.conflict) throw new ConflictError();
+  const lf = disk === null ? null : toLF(disk);
+  if (lf === s.saved) {
+    setDisk(s, disk);
+    return false;
+  }
+  if (lf === s.doc) {
+    setDisk(s, disk);
+    s.saved = lf;
+    return true;
+  }
+  conflictWith(s, disk);
+  throw new ConflictError();
+}
+
+/** Runs only inside the path queue. Every write names the disk text it replaces. */
 async function saveBuffer(s: DocumentBuffer): Promise<void> {
   stopAutosave(s);
   if (s.conflict) throw new ConflictError();
-  saving++;
-  publish();
   try {
     while (s.doc !== s.saved) {
-      const disk = await diskContent(s.path);
-      if (s.conflict) throw new ConflictError();
-      if (disk !== s.saved) {
-        if (disk === s.doc) {
-          s.saved = disk;
-          break;
-        }
-        conflictWith(s, disk);
-        throw new ConflictError();
-      }
+      if (s.disk === undefined && await rebaseline(s)) break;
       // Read after awaiting disk: changes typed during the read belong to this write.
       const doc = s.doc;
-      await writeFile(s.path, doc);
+      const raw = fromLF(doc, s.eol);
+      try {
+        await writeFile(s.path, raw, s.disk ?? null);
+      } catch (e) {
+        if (!isConflictError(e)) throw e;
+        const expected = s.disk;
+        if (await rebaseline(s)) break;
+        // Same baseline refused twice: report instead of looping.
+        if (s.disk === expected) throw e;
+        continue;
+      }
+      s.disk = raw;
+      // A listing that started before this write must not bring back the old text once the buffer is released.
+      vault.touch(s.path);
       s.saved = doc;
       // Typing during a slow write is saved in a subsequent, never overlapping write.
     }
@@ -205,7 +270,6 @@ async function saveBuffer(s: DocumentBuffer): Promise<void> {
     reportFailure(s, e);
     throw e;
   } finally {
-    saving--;
     releaseClean(s);
     publish();
   }
@@ -213,6 +277,7 @@ async function saveBuffer(s: DocumentBuffer): Promise<void> {
 
 function flushBuffer(s: DocumentBuffer): Promise<void> {
   stopAutosave(s);
+  syncIndex(s);
   return enqueue(s.path, () => saveBuffer(s));
 }
 
@@ -222,11 +287,22 @@ async function settleAll(promises: Promise<unknown>[]): Promise<void> {
   if (failed) throw failed.reason;
 }
 
-/** Flush all retained documents, including failed saves from editors that have unmounted. */
-export async function flush(): Promise<void> {
+const within = (path: string, scope: string) => path === scope || path.startsWith(`${scope}/`);
+
+/**
+ * Flush retained documents, including failed saves from editors that have unmounted.
+ * With `scope`, only that file or the files below that folder.
+ */
+export async function flush(scope?: string): Promise<void> {
+  const inScope = (path: string) => scope === undefined || within(path, scope);
   // Mutations may still be creating their buffer from a disk read.
-  await settleAll([...chains.values()]);
-  await settleAll([...buffers.values()].map(flushBuffer));
+  await settleAll([...chains].filter(([path]) => inScope(path)).map(([, p]) => p));
+  await settleAll([...buffers.values()].filter((s) => inScope(s.path)).map(flushBuffer));
+}
+
+/** Navigation only waits for the open document; other failed saves stay in the error bar. */
+export function flushCurrent(): Promise<void> {
+  return session ? flush(session.path) : Promise.resolve();
 }
 
 function replaceEditor(s: DocumentBuffer) {
@@ -234,118 +310,163 @@ function replaceEditor(s: DocumentBuffer) {
   try { s.handle?.setDoc(s.doc); } finally { s.replacing = false; }
 }
 
-function loadDiskInto(s: DocumentBuffer, content: string) {
+function loadDiskInto(s: DocumentBuffer, disk: string) {
   stopAutosave(s);
   cancelArchives(s.path);
-  s.saved = content;
-  s.doc = content;
+  setDisk(s, disk);
+  s.saved = toLF(disk);
+  s.doc = s.saved;
   s.conflict = null;
   s.error = null;
   replaceEditor(s);
-  vault.setContent(s.path, content);
+  syncIndex(s);
   publish();
 }
 
-/** External reload is serialized and revalidated; setDoc must reset the editor undo history. */
-export function reloadSession(content: string): Promise<void> {
-  const s = session;
-  if (!s) return Promise.resolve();
-  return enqueue(s.path, async () => {
-    const disk = await diskContent(s.path);
-    if (disk !== content) {
-      conflictWith(s, disk);
-      throw new ConflictError();
-    }
-    loadDiskInto(s, content);
-  });
+type Dropped = "kept" | "deleted" | "unreadable";
+
+/**
+ * After the user chose to drop local changes, reindex what is left on disk: a full listing
+ * after a deletion, just this path when the disk version cannot be read (not UTF-8, no access).
+ * Returns true when the buffer is gone, so the caller can leave its view.
+ */
+async function afterDrop(path: string, outcome: Dropped): Promise<boolean> {
+  const root = vault.get().root;
+  if (root && outcome === "deleted") await vault.load(root);
+  // A path the backend refuses to read (e.g. a symlink leaving the vault) needs a full listing.
+  if (root && outcome === "unreadable") await vault.refresh(root, [path]).catch(() => vault.load(root));
+  return outcome !== "kept";
 }
 
-/** Explicit permission to overwrite this baseline; flush still rechecks the actual disk. */
-export function markDiskContent(content: string | null) {
-  if (!session) return;
-  stopAutosave(session);
-  session.saved = content;
-  session.conflict = null;
-  session.error = null;
-  publish();
-}
-
-/** Returns true only when the user explicitly accepted a deletion. */
+/** Returns true only when the user explicitly dropped the local document. */
 export function resolveConflict(conflict: DiskConflict, choice: "local" | "disk"): Promise<boolean> {
-  return enqueue(conflict.path, async () => {
+  return enqueue(conflict.path, async (): Promise<Dropped> => {
     const s = buffers.get(conflict.path);
     if (!s || s.conflict !== conflict) throw new ConflictError();
-    const disk = await diskContent(s.path);
+    let disk: string | null;
+    try {
+      disk = await diskContent(s.path);
+    } catch (e) {
+      if (choice === "local") throw e;
+      dropBuffer(s);
+      return "unreadable";
+    }
     if (disk !== conflict.disk) {
       conflictWith(s, disk);
       throw new ConflictError();
     }
     if (choice === "local") {
-      s.saved = disk;
+      // Explicit overwrite: the write is based on exactly the disk text the user saw.
+      setDisk(s, disk);
+      s.saved = disk === null ? null : toLF(disk);
       s.conflict = null;
       await saveBuffer(s);
-      vault.setContent(s.path, s.doc);
-      return false;
+      syncIndex(s);
+      return "kept";
     }
     if (disk !== null) {
       loadDiskInto(s, disk);
       releaseClean(s);
-      return false;
+      return "kept";
     }
-    stopAutosave(s);
-    cancelArchives(s.path);
-    buffers.delete(s.path);
-    if (session === s) session = null;
-    s.handle = null;
-    publish();
-    return true;
-  }).then(async (deleted) => {
-    const root = vault.get().root;
-    if (deleted && root) await vault.load(root);
-    return deleted;
-  });
+    dropBuffer(s);
+    return "deleted";
+  }).then((outcome) => afterDrop(conflict.path, outcome));
+}
+
+/** Retry a failed save. */
+export function retrySave(path: string): Promise<void> {
+  const s = buffers.get(path);
+  return s ? flushBuffer(s) : Promise.resolve();
+}
+
+/** In-memory document of a retained buffer, converted back to the file's line endings. */
+export function localCopy(path: string): string | null {
+  const s = buffers.get(path);
+  return s ? fromLF(s.doc, s.eol) : null;
 }
 
 /**
- * Every vault refresh passes here, not only watcher refreshes. Dirty/deleted documents
- * remain in the index, while disk reconciliation is ordered after this app's writes.
+ * Throws away local changes and reloads the disk version. Returns true when the buffer was
+ * dropped because the file no longer exists or cannot be read, so the caller can leave its view.
  */
-vault.setReconciler(async (root, files) => {
-  const inVault = (path: string) => path.startsWith(`${root}/`);
+export function discardChanges(path: string): Promise<boolean> {
+  return enqueue(path, async (): Promise<Dropped> => {
+    const s = buffers.get(path);
+    if (!s) return "kept";
+    let disk: string | null;
+    try {
+      disk = await diskContent(path);
+    } catch {
+      dropBuffer(s);
+      return "unreadable";
+    }
+    if (disk === null) {
+      dropBuffer(s);
+      return "deleted";
+    }
+    loadDiskInto(s, disk);
+    releaseClean(s);
+    return "kept";
+  }).then((outcome) => afterDrop(path, outcome));
+}
+
+/** Vault switch: callers flush first; nothing in the old vault can be saved afterwards. */
+export function forgetAll() {
+  cancelArchives();
+  for (const s of [...buffers.values()]) dropBuffer(s);
+}
+
+/**
+ * Every vault refresh passes here. `scope` limits a partial refresh to those paths; null is
+ * a full listing, where an unlisted path means a deleted file. Dirty/deleted documents remain
+ * in the index, while disk reconciliation is ordered after this app's writes.
+ */
+vault.setReconciler(async (root, files, scope) => {
+  const inScope = (path: string) => path.startsWith(`${root}/`) && (!scope || scope.has(path));
   if (vault.get().root && vault.get().root !== root) cancelArchives();
-  const listed = new Map(files.map((f) => [f.path, f]));
+  const listed = new Set(files.map((f) => f.path));
   for (const archive of pendingArchives.values()) {
-    if (!inVault(archive.path) || !listed.has(archive.path)) cancelArchives(archive.path);
+    if (inScope(archive.path) && !listed.has(archive.path)) cancelArchives(archive.path);
   }
-  await Promise.all([...buffers.values()].filter((s) => inVault(s.path)).map((s) => enqueue(s.path, async () => {
+  await Promise.all([...buffers.values()].filter((s) => inScope(s.path)).map((s) => enqueue(s.path, async () => {
     if (buffers.get(s.path) !== s) return;
-    const disk = await diskContent(s.path);
+    let disk: string | null;
+    try {
+      disk = await diskContent(s.path);
+    } catch (e) {
+      // One unreadable file must not stop the rest of the vault from reloading.
+      reportFailure(s, e);
+      return;
+    }
+    const lf = disk === null ? null : toLF(disk);
     if (s.conflict) conflictWith(s, disk);
-    else if (disk === s.saved) { /* The listing may have raced our write; preserve the buffer below. */ }
-    else if (disk === null || s.doc !== s.saved && disk !== s.doc) conflictWith(s, disk);
+    else if (lf === s.saved) { if (disk !== null) setDisk(s, disk); /* The listing may have raced our write. */ }
+    else if (disk === null || s.doc !== s.saved && lf !== s.doc) conflictWith(s, disk);
     else loadDiskInto(s, disk);
-  })));
-  const merged = new Map<string, VaultFile>(files.map((f) => [f.path, f]));
+  }).catch(() => undefined)));
+  const merged = new Map(files.map((f) => [f.path, f]));
   for (const s of buffers.values()) {
-    if (!inVault(s.path)) continue;
+    if (!inScope(s.path)) continue;
     const previous = merged.get(s.path) ?? vault.get().files.get(s.path);
-    merged.set(s.path, { path: s.path, rel: previous?.rel ?? s.path.slice(root.length + 1), mtime: previous?.mtime ?? Date.now(), content: s.doc });
+    merged.set(s.path, { path: s.path, rel: previous?.rel ?? s.path.slice(root.length + 1), content: s.doc });
   }
   return [...merged.values()];
 });
 
-/** Routes all mutations and saves through the same per-file queue. */
+/** Routes all mutations and saves through the same per-file queue; `compute` sees LF text. */
 export function mutateFile(path: string, compute: (text: string) => TextEdit[]): Promise<void> {
   return enqueue(path, async () => {
     let s = buffers.get(path);
     try {
       if (!s) {
-        const text = await readFile(path);
+        const raw = await readFile(path);
         // An editor may have opened while the disk read was pending.
-        s = buffers.get(path) ?? newBuffer(path, text);
+        s = buffers.get(path) ?? newBuffer(path, toLF(raw), raw);
       }
       if (s.conflict) throw new ConflictError();
-      const before = s.doc;
+      // The editor is authoritative for an open document.
+      const before = s.handle ? s.handle.getDoc() : s.doc;
       const edits = compute(before);
       if (!edits.length) { releaseClean(s); return; }
       const next = applyEdits(before, edits);
@@ -354,12 +475,19 @@ export function mutateFile(path: string, compute: (text: string) => TextEdit[]):
       } else {
         trackArchives(path, before, next);
         s.doc = next;
-        vault.setContent(path, next);
+        syncIndex(s);
         await saveBuffer(s);
       }
     } catch (e) {
-      if (s) reportFailure(s, e);
-      else toast.show({ text: `修改失败：${String(e)}` });
+      // Mistakes the user can retry: reported once, never marking the buffer as failed.
+      if (e instanceof StaleTaskError || e instanceof RecurrenceError) {
+        toast.show({ text: e.message });
+        if (s) releaseClean(s);
+      } else if (s) {
+        reportFailure(s, e);
+      } else {
+        toast.show({ text: `修改失败：${String(e)}` });
+      }
       throw e;
     }
   });
@@ -396,7 +524,7 @@ let archiveKey = 0;
 /** Normal view switches leave timers intact. Removal, rename, and vault switches cancel them. */
 export function cancelArchives(path?: string) {
   for (const [key, pending] of pendingArchives) {
-    if (path && pending.path !== path && !pending.path.startsWith(`${path}/`)) continue;
+    if (path && !within(pending.path, path)) continue;
     pending.cancelled = true;
     window.clearTimeout(pending.timer);
     pendingArchives.delete(key);
@@ -406,19 +534,22 @@ export function cancelArchives(path?: string) {
 function trackArchives(path: string, before: string, after: string) {
   const [edit] = diffEdit(before, after);
   if (!edit) return;
-  const oldLines = before.split("\n");
-  const newLines = after.split("\n");
+  const oldLines = splitLines(before);
+  const newLines = splitLines(after);
+  const oldTexts = oldLines.map((l) => l.text);
+  const newTexts = newLines.map((l) => l.text);
   for (const [key, pending] of pendingArchives) {
     if (pending.path !== path) continue;
     // String-only onChange cannot identify which identical line was inserted/deleted.
-    const ambiguous = oldLines.indexOf(pending.id.raw) !== oldLines.lastIndexOf(pending.id.raw)
-      || newLines.indexOf(pending.id.raw) !== newLines.lastIndexOf(pending.id.raw);
-    const offset = oldLines.slice(0, pending.id.line).reduce((n, line) => n + line.length + 1, 0);
+    const ambiguous = oldTexts.indexOf(pending.id.raw) !== oldTexts.lastIndexOf(pending.id.raw)
+      || newTexts.indexOf(pending.id.raw) !== newTexts.lastIndexOf(pending.id.raw);
+    const old = oldLines[pending.id.line];
+    const offset = old?.start ?? before.length;
     const end = offset + pending.id.raw.length;
     const overlaps = edit.from < end && edit.to > offset || edit.from > offset && edit.from < end;
     const nextOffset = edit.to <= offset ? offset + edit.insert.length - (edit.to - edit.from) : offset;
-    const line = after.slice(0, nextOffset).split("\n").length - 1;
-    if (ambiguous || pending.content !== before || overlaps || oldLines[pending.id.line] !== pending.id.raw || newLines[line] !== pending.id.raw) {
+    const line = splitLines(after.slice(0, nextOffset)).length - 1;
+    if (ambiguous || pending.content !== before || overlaps || old?.text !== pending.id.raw || newTexts[line] !== pending.id.raw) {
       pending.cancelled = true;
       window.clearTimeout(pending.timer);
       pendingArchives.delete(key);
@@ -434,7 +565,7 @@ function runArchive(pending: PendingArchive): Promise<void> {
   window.clearTimeout(pending.timer);
   const job = mutateFile(pending.path, (text) => {
     // Never fall back to another identical task after an untracked external change.
-    if (pending.cancelled || text !== pending.content || text.split("\n")[pending.id.line] !== pending.id.raw) return [];
+    if (pending.cancelled || text !== pending.content || lineText(text, pending.id.line) !== pending.id.raw) return [];
     return archiveTask(text, pending.id);
   });
   pending.job = job;
@@ -453,12 +584,14 @@ export async function flushArchives(): Promise<void> {
   await settleAll([...archiveJobs, ...[...pendingArchives.values()].map(runArchive)]);
 }
 
-export async function toggle(path: string, line: number): Promise<void> {
+/** `expectRaw` is the task's line text when the user acted; a changed line aborts with a toast. */
+export async function toggle(path: string, line: number, expectRaw: string): Promise<void> {
   let before = "";
   let after = "";
   let candidate: TaskIdentity | null = null;
   let checked = false;
   await mutateFile(path, (text) => {
+    assertLine(text, line, expectRaw);
     const r = toggleTask(text, line, new Date());
     before = text;
     after = applyEdits(text, r.edits);
@@ -494,6 +627,14 @@ export async function toggle(path: string, line: number): Promise<void> {
   });
 }
 
-export function patchFields(path: string, line: number, patch: FieldPatch): Promise<void> {
-  return mutateFile(path, (text) => setTaskFields(text, line, patch));
+export function patchFields(path: string, line: number, patch: FieldPatch, expectRaw: string): Promise<void> {
+  return mutateFile(path, (text) => {
+    assertLine(text, line, expectRaw);
+    return setTaskFields(text, line, patch);
+  });
+}
+
+/** Current text of a document: the retained buffer when there is one, else the index. */
+export function documentText(path: string): string | undefined {
+  return buffers.get(path)?.doc ?? vault.get().files.get(path)?.content;
 }

@@ -1,9 +1,10 @@
 import type { Completion, CompletionContext, CompletionResult, CompletionSource } from '@codemirror/autocomplete';
+import { syntaxTree } from '@codemirror/language';
+import type { EditorState } from '@codemirror/state';
 import type { EditorView } from '@codemirror/view';
+import type { SyntaxNode } from '@lezer/common';
 import { suggest } from '../core';
-
-/** '@' at line start or after whitespace, then up to 30 chars (spaces allowed) up to the cursor. */
-const AT_QUERY = /(?:^|\s)@([^@\n]{0,30})$/;
+import { AT_QUERY } from './helpers';
 
 function applySuggestion(insert: string) {
   return (view: EditorView, _completion: Completion, from: number, to: number) => {
@@ -22,9 +23,20 @@ function applySuggestion(insert: string) {
   };
 }
 
+function isInCode(state: EditorState, pos: number): boolean {
+  const tree = syntaxTree(state);
+  for (const side of [-1, 1] as const) {
+    for (let node: SyntaxNode | null = tree.resolveInner(pos, side); node; node = node.parent) {
+      if (node.name === 'FencedCode' || node.name === 'CodeBlock' || node.name === 'InlineCode') return true;
+    }
+  }
+  return false;
+}
+
 /** Completion source turning '@query' into Obsidian Tasks field tokens via core `suggest`. */
 export function atCompletion(now: () => Date): CompletionSource {
   return (ctx: CompletionContext): CompletionResult | null => {
+    if (isInCode(ctx.state, ctx.pos)) return null;
     const line = ctx.state.doc.lineAt(ctx.pos);
     const match = AT_QUERY.exec(line.text.slice(0, ctx.pos - line.from));
     if (!match) return null;

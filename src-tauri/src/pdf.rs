@@ -3,8 +3,10 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use tauri::AppHandle;
+use tauri::{AppHandle, State};
 use tokio::sync::oneshot;
+
+use crate::export::ExportState;
 
 /// Upper bound for loading + printing a document.
 const EXPORT_TIMEOUT: Duration = Duration::from_secs(120);
@@ -39,6 +41,8 @@ mod imp {
     pub struct JobIvars {
         id: u64,
         out_path: PathBuf,
+        /// The print job writes here; renamed over `out_path` only on success.
+        tmp_path: PathBuf,
         reply: RefCell<Option<Reply>>,
         window: RefCell<Option<Retained<NSWindow>>>,
         web_view: RefCell<Option<Retained<WKWebView>>>,
@@ -72,7 +76,7 @@ mod imp {
                 _navigation: Option<&WKNavigation>,
                 error: &NSError,
             ) {
-                self.finish(Err(format!("cannot render HTML: {error}")));
+                self.fail(format!("cannot render HTML: {error}"));
             }
 
             #[unsafe(method(webView:didFailProvisionalNavigation:withError:))]
@@ -82,7 +86,12 @@ mod imp {
                 _navigation: Option<&WKNavigation>,
                 error: &NSError,
             ) {
-                self.finish(Err(format!("cannot load HTML: {error}")));
+                self.fail(format!("cannot load HTML: {error}"));
+            }
+
+            #[unsafe(method(webViewWebContentProcessDidTerminate:))]
+            fn content_process_did_terminate(&self, _web_view: &WKWebView) {
+                self.fail("the page renderer quit unexpectedly".to_string());
             }
         }
 
@@ -107,9 +116,14 @@ mod imp {
 
             #[unsafe(method(completePrint:))]
             fn complete_print(&self, success: &NSNumber) {
-                let out = &self.ivars().out_path;
-                let result = if success.as_bool() && out.is_file() {
-                    Ok(())
+                let ivars = self.ivars();
+                let (out, tmp) = (&ivars.out_path, &ivars.tmp_path);
+                let result = if ivars.reply.borrow().is_none() {
+                    // Already answered (timeout or renderer crash): keep the old file.
+                    Err(String::new())
+                } else if success.as_bool() && tmp.is_file() {
+                    std::fs::rename(tmp, out)
+                        .map_err(|e| format!("cannot write {}: {e}", out.display()))
                 } else {
                     Err(format!("PDF export to {} failed", out.display()))
                 };
@@ -130,7 +144,7 @@ mod imp {
                 return;
             };
             let url = NSURL::fileURLWithPath(&NSString::from_str(
-                &self.ivars().out_path.to_string_lossy(),
+                &self.ivars().tmp_path.to_string_lossy(),
             ));
 
             let info = NSPrintInfo::new();
@@ -165,12 +179,26 @@ mod imp {
             }
         }
 
+        /// Fails the export. While a print operation runs, only the reply is sent: the
+        /// job must stay alive as the operation's delegate until its callback.
+        fn fail(&self, error: String) {
+            if self.ivars().printing.get() {
+                if let Some(reply) = self.ivars().reply.borrow_mut().take() {
+                    let _ = reply.send(Err(error));
+                }
+            } else {
+                self.finish(Err(error));
+            }
+        }
+
         /// Replies once, tears down the offscreen window and releases the job.
         fn finish(&self, result: Result<(), String>) {
             if let Some(reply) = self.ivars().reply.borrow_mut().take() {
                 // The awaiting command may have timed out; nothing to do then.
                 let _ = reply.send(result);
             }
+            // Gone already after a successful rename.
+            let _ = std::fs::remove_file(&self.ivars().tmp_path);
             if let Some(web_view) = self.ivars().web_view.borrow_mut().take() {
                 unsafe {
                     web_view.setNavigationDelegate(None);
@@ -195,7 +223,14 @@ mod imp {
         }
     }
 
-    pub fn start(mtm: MainThreadMarker, id: u64, html: &str, out_path: PathBuf, reply: Reply) {
+    pub fn start(
+        mtm: MainThreadMarker,
+        id: u64,
+        html: &str,
+        out_path: PathBuf,
+        tmp_path: PathBuf,
+        reply: Reply,
+    ) {
         let frame = NSRect::new(
             NSPoint::new(0.0, 0.0),
             NSSize::new(PAPER.width - 2.0 * MARGIN, PAPER.height - 2.0 * MARGIN),
@@ -222,6 +257,7 @@ mod imp {
         let job = PdfJob::alloc(mtm).set_ivars(JobIvars {
             id,
             out_path,
+            tmp_path,
             reply: RefCell::new(Some(reply)),
             window: RefCell::new(Some(window)),
             web_view: RefCell::new(Some(web_view.clone())),
@@ -232,9 +268,9 @@ mod imp {
 
         unsafe {
             web_view.setNavigationDelegate(Some(ProtocolObject::from_ref(&*job)));
-            // A file:/// base URL lets the document reference local images via file:// URLs.
-            let base = NSURL::fileURLWithPath_isDirectory(&NSString::from_str("/"), true);
-            web_view.loadHTMLString_baseURL(&NSString::from_str(html), Some(&base));
+            // Images are embedded as data: URLs; the page gets no file access.
+            let base = NSURL::URLWithString(&NSString::from_str("about:blank"));
+            web_view.loadHTMLString_baseURL(&NSString::from_str(html), base.as_deref());
         }
     }
 
@@ -242,38 +278,32 @@ mod imp {
     pub fn cancel(id: u64) {
         let job = JOBS.with(|jobs| jobs.borrow().iter().find(|j| j.ivars().id == id).cloned());
         if let Some(job) = job {
-            let error = Err("PDF export timed out".to_string());
-            if job.ivars().printing.get() {
-                if let Some(reply) = job.ivars().reply.borrow_mut().take() {
-                    let _ = reply.send(error);
-                }
-            } else {
-                job.finish(error);
-            }
+            job.fail("PDF export timed out".to_string());
         }
     }
 }
 
+/// Renders `html` to a PDF at `out_path`, which must come from `choose_export_path`.
+/// The previous file is replaced only after printing succeeded.
 #[tauri::command]
-pub async fn export_pdf(app: AppHandle, html: String, out_path: String) -> Result<(), String> {
+pub async fn export_pdf(
+    app: AppHandle,
+    exports: State<'_, ExportState>,
+    html: String,
+    out_path: String,
+) -> Result<(), String> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
-    let out_path = PathBuf::from(out_path);
-    if let Some(parent) = out_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
-    }
-    // Remove a stale file so success can be detected by the file's presence.
-    match std::fs::remove_file(&out_path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(format!("cannot replace {}: {e}", out_path.display())),
-    }
-
+    let out_path = exports.take(&out_path)?;
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let name = out_path
+        .file_name()
+        .ok_or_else(|| format!("invalid export path: {}", out_path.display()))?
+        .to_string_lossy();
+    let tmp_path = out_path.with_file_name(format!(".{name}.{}-{id}.tmp.pdf", std::process::id()));
     let (tx, rx) = oneshot::channel();
-    start(&app, id, html, out_path, tx)?;
+    start(&app, id, html, out_path, tmp_path, tx)?;
     match tokio::time::timeout(EXPORT_TIMEOUT, rx).await {
         Ok(Ok(result)) => result,
         Ok(Err(_)) => Err("PDF export was aborted".to_string()),
@@ -287,15 +317,29 @@ pub async fn export_pdf(app: AppHandle, html: String, out_path: String) -> Resul
 }
 
 #[cfg(target_os = "macos")]
-fn start(app: &AppHandle, id: u64, html: String, out_path: PathBuf, reply: Reply) -> Result<(), String> {
+fn start(
+    app: &AppHandle,
+    id: u64,
+    html: String,
+    out_path: PathBuf,
+    tmp_path: PathBuf,
+    reply: Reply,
+) -> Result<(), String> {
     app.run_on_main_thread(move || {
         let mtm = objc2::MainThreadMarker::new().expect("run_on_main_thread runs on the main thread");
-        imp::start(mtm, id, &html, out_path, reply);
+        imp::start(mtm, id, &html, out_path, tmp_path, reply);
     })
     .map_err(|e| format!("cannot start PDF export: {e}"))
 }
 
 #[cfg(not(target_os = "macos"))]
-fn start(_app: &AppHandle, _id: u64, _html: String, _out_path: PathBuf, _reply: Reply) -> Result<(), String> {
+fn start(
+    _app: &AppHandle,
+    _id: u64,
+    _html: String,
+    _out_path: PathBuf,
+    _tmp_path: PathBuf,
+    _reply: Reply,
+) -> Result<(), String> {
     Err("PDF export is only supported on macOS".to_string())
 }

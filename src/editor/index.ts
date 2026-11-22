@@ -2,13 +2,15 @@ import { autocompletion } from '@codemirror/autocomplete';
 import { defaultKeymap, history, historyKeymap, indentLess, indentMore } from '@codemirror/commands';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { indentUnit } from '@codemirror/language';
+import { styleTags, tags } from '@lezer/highlight';
 import { languages } from '@codemirror/language-data';
 import { EditorSelection, EditorState, Prec } from '@codemirror/state';
 import { drawSelection, dropCursor, EditorView, keymap } from '@codemirror/view';
-import { parseTaskLine } from '../core';
+import { fencedLines, parseTaskLine } from '../core';
 import type { FieldKind, TextEdit } from '../core';
 import { atCompletion } from './completion';
-import { livePreview } from './livePreview';
+import { minimalEdit } from './helpers';
+import { livePreview, refocusIfFocused } from './livePreview';
 import { theme } from './theme';
 import type { PreviewConfig } from './widgets';
 import './editor.css';
@@ -19,7 +21,7 @@ export interface EditorOptions {
   resolveImage(src: string): string | null;
   onChange(doc: string): void;
   onToggleRequest(line: number): void;
-  onBadgeClick(line: number, kind: FieldKind, rect: DOMRect): void;
+  onBadgeClick(line: number, lineText: string, kind: FieldKind, rect: DOMRect): void;
   onOpenLink(href: string): void;
   onPasteImage(data: Uint8Array, ext: string): Promise<string | null>;
   now(): Date;
@@ -66,6 +68,9 @@ export function createEditor(opts: EditorOptions): EditorHandle {
   const toggleAtCursor = (view: EditorView): boolean => {
     const line = view.state.doc.lineAt(view.state.selection.main.head);
     if (!parseTaskLine(line.text)) return false;
+    // Skip fenced-code lines: core's toggleTask would error or corrupt.
+    const fenced = fencedLines(view.state.doc.toString());
+    if (fenced.has(line.number - 1)) return false;
     opts.onToggleRequest(line.number - 1);
     return true;
   };
@@ -74,7 +79,8 @@ export function createEditor(opts: EditorOptions): EditorHandle {
     for (const file of files) {
       try {
         const markdownText = await opts.onPasteImage(new Uint8Array(await file.arrayBuffer()), imageExt(file));
-        if (markdownText) insertAtCursor(view, markdownText);
+        // Guard against the view being destroyed or detached while the upload was in flight.
+        if (markdownText && view.dom.isConnected) insertAtCursor(view, markdownText);
       } catch (err) {
         console.error('Pasting image failed:', err);
       }
@@ -88,7 +94,13 @@ export function createEditor(opts: EditorOptions): EditorHandle {
       EditorView.lineWrapping,
       EditorState.tabSize.of(4),
       indentUnit.of('\t'),
-      markdown({ base: markdownLanguage, codeLanguages: languages, addKeymap: true }),
+      markdown({
+        base: markdownLanguage,
+        codeLanguages: languages,
+        addKeymap: true,
+        // GFM tags `[ ]` as an atom (code-number colour); in raw lines it is markup like `-`.
+        extensions: { props: [styleTags({ TaskMarker: tags.processingInstruction })] },
+      }),
       theme,
       livePreview(cfg),
       autocompletion({
@@ -137,12 +149,18 @@ export function createEditor(opts: EditorOptions): EditorHandle {
       const cursor = Math.min(view.state.selection.main.head, doc.length);
       // A disk version is a new editing baseline; undo must never restore the previous file version.
       view.setState(EditorState.create({ doc, extensions, selection: EditorSelection.cursor(cursor) }));
+      // Restore focus tracking so the cursor line keeps showing raw markdown.
+      refocusIfFocused(view);
     },
 
     applyEdits(edits) {
       if (!edits.length) return;
+      const docText = view.state.doc;
       view.dispatch({
-        changes: edits.map((e) => ({ from: e.from, to: e.to, insert: e.insert })),
+        changes: edits.map((e) => {
+          const current = docText.sliceString(e.from, e.to);
+          return minimalEdit(e.from, e.to, current, e.insert);
+        }),
         userEvent: 'input',
       });
     },

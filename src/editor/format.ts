@@ -3,30 +3,12 @@ import type { FieldKind, Priority } from '../core';
 
 const WEEKDAY_ZH = ['日', '一', '二', '三', '四', '五', '六'];
 
-const PRIORITY_EMOJI: Record<Priority, string> = {
-  highest: '🔺',
-  high: '⏫',
-  medium: '🔼',
-  low: '🔽',
-  lowest: '⏬',
-};
-
 const PRIORITY_LABEL: Record<Priority, string> = {
   highest: '最高',
   high: '高',
   medium: '中',
   low: '低',
   lowest: '最低',
-};
-
-const KIND_EMOJI: Record<Exclude<FieldKind, 'priority'>, string> = {
-  recurrence: '🔁',
-  reminder: '⏰',
-  created: '➕',
-  start: '🛫',
-  scheduled: '⏳',
-  due: '📅',
-  done: '✅',
 };
 
 function splitISO(iso: string): [number, number, number] | null {
@@ -83,20 +65,26 @@ export function formatRecurrenceZh(text: string): string {
   }
 }
 
-/** Badge text for a field token, e.g. '📅 10月4日 周六', '⏫ 高'. */
+/** Secondary dates share the calendar icon with the due date, so they carry a word to tell them apart. */
+const DATE_PREFIX: Partial<Record<FieldKind, string>> = {
+  start: '开始 ',
+  scheduled: '计划 ',
+  created: '创建 ',
+};
+
+/** Badge text for a field token, e.g. '10月4日 周六', '高'; the kind's icon is drawn by CSS (`data-kind`). */
 export function badgeText(kind: FieldKind, value: string, todayIso: string): string {
   if (kind === 'priority') {
     const p = value as Priority;
-    return p in PRIORITY_LABEL ? `${PRIORITY_EMOJI[p]} ${PRIORITY_LABEL[p]}` : value;
+    return p in PRIORITY_LABEL ? PRIORITY_LABEL[p] : value;
   }
-  const emoji = KIND_EMOJI[kind];
   switch (kind) {
     case 'recurrence':
-      return `${emoji} ${formatRecurrenceZh(value)}`;
+      return formatRecurrenceZh(value);
     case 'reminder':
-      return `${emoji} ${formatReminder(value, todayIso)}`;
+      return formatReminder(value, todayIso);
     default:
-      return `${emoji} ${formatDateZh(value, todayIso)}`;
+      return `${DATE_PREFIX[kind] ?? ''}${formatDateZh(value, todayIso)}`;
   }
 }
 

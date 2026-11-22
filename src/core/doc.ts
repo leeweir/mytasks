@@ -1,6 +1,6 @@
 import { addDays, diffDays, todayISO } from './dates';
 import { nextOccurrence, parseRecurrence } from './recurrence';
-import { formatTaskLine, parseTaskLine } from './task';
+import { formatTaskLine, isOpenTask, parseTaskLine } from './task';
 import type { FieldKind, FieldPatch, ParsedTask, TaskFields, TaskIdentity, TextEdit } from './types';
 
 export interface DocLine {
@@ -84,23 +84,49 @@ function headingLevel(line: string): number {
   return m ? m[1].length : 0;
 }
 
+const FENCE_OPEN_RE = /^[ \t]*(`{3,}|~{3,})(.*)$/;
+const FENCE_CLOSE_RE = /^[ \t]*(`{3,}|~{3,})[ \t]*$/;
+
+/**
+ * Indexes of lines inside fenced code blocks, fence lines included. A backtick fence's
+ * info string may not contain backticks; a closing fence uses the opening character, is
+ * at least as long and has nothing but whitespace after it. An unclosed fence runs to EOF.
+ */
+function fencedLineSet(lines: readonly string[]): Set<number> {
+  const out = new Set<number>();
+  let fence: string | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (fence === null) {
+      const m = FENCE_OPEN_RE.exec(line);
+      if (!m || (m[1][0] === '`' && m[2].includes('`'))) continue;
+      fence = m[1];
+      out.add(i);
+      continue;
+    }
+    out.add(i);
+    const m = FENCE_CLOSE_RE.exec(line);
+    if (m && m[1][0] === fence[0] && m[1].length >= fence.length) fence = null;
+  }
+  return out;
+}
+
+/** 0-based indexes of the lines of `text` inside fenced code blocks (fence lines included). */
+export function fencedLines(text: string): Set<number> {
+  return fencedLineSet(splitLines(text).map((l) => l.text));
+}
+
 /**
  * `## Done` sections as [start, end) line ranges (heading included). A section runs
  * to the next heading of level ≤ 2 or EOF; fenced code blocks are skipped.
  */
 export function doneSections(lines: readonly string[]): [number, number][] {
+  const fenced = fencedLineSet(lines);
   const out: [number, number][] = [];
   let open = -1;
-  let fence: string | null = null;
   for (let i = 0; i < lines.length; i++) {
+    if (fenced.has(i)) continue;
     const line = lines[i];
-    const fm = /^ {0,3}(`{3,}|~{3,})/.exec(line);
-    if (fm) {
-      if (fence === null) fence = fm[1];
-      else if (fm[1][0] === fence[0] && fm[1].length >= fence.length) fence = null;
-      continue;
-    }
-    if (fence !== null) continue;
     const level = headingLevel(line);
     if (level === 0 || level > 2) continue;
     if (open !== -1) {
@@ -117,32 +143,63 @@ function inRanges(ranges: [number, number][], line: number): boolean {
   return ranges.some(([s, e]) => line > s && line < e);
 }
 
-function checkedCopy(t: ParsedTask, today: string): ParsedTask {
-  return { ...t, status: 'x', checked: true, fields: { ...t.fields, done: today } };
+/** Thrown by `toggleTask` when completing a task whose 🔁 rule can't be understood. */
+export class RecurrenceError extends Error {
+  constructor(readonly rule: string) {
+    super(`无法识别的重复规则：${rule}`);
+    this.name = 'RecurrenceError';
+  }
 }
 
-/** The unchecked next instance of a recurring task, or null if the rule is invalid. */
+function checkedCopy(t: ParsedTask, today: string): ParsedTask {
+  return { ...t, status: 'x', checked: true, cancelled: false, fields: { ...t.fields, done: today } };
+}
+
+/**
+ * Formats `t` with `fields`. A field listed in `cleared` that an older duplicate left in
+ * the description would bring back on re-parse is removed from the description as well.
+ */
+function formatCleared(t: ParsedTask, fields: TaskFields, cleared: readonly FieldKind[]): string {
+  let line = formatTaskLine({ ...t, fields });
+  for (;;) {
+    const again = parseTaskLine(line);
+    if (!again || !cleared.some((k) => again.fields[k] !== undefined)) return line;
+    const rest = { ...again.fields };
+    for (const k of cleared) delete rest[k];
+    line = formatTaskLine({ ...again, fields: rest });
+  }
+}
+
+/**
+ * The unchecked next instance of a recurring task, or null without a rule. Every date
+ * keeps its offset from the reference date (due, else reminder, scheduled, start), which
+ * moves to the rule's next occurrence (counted from today for 'when done').
+ */
 function nextInstance(t: ParsedTask, today: string): ParsedTask | null {
   const rule = t.fields.recurrence;
   if (!rule) return null;
-  const whenDone = /\bwhen done\s*$/i.test(rule);
   const r = parseRecurrence(rule);
-  if (!r) return null;
+  if (!r) throw new RecurrenceError(rule);
+  const whenDone = /\bwhen done\s*$/i.test(rule);
   const f = t.fields;
   const reminderDate = f.reminder?.slice(0, 10);
-  const base = whenDone ? today : (f.due ?? reminderDate ?? today);
-  const next = nextOccurrence(r, base);
-  const delta = diffDays(base, next);
+  const ref = f.due ?? reminderDate ?? f.scheduled ?? f.start;
+  const newRef = nextOccurrence(r, whenDone || ref === undefined ? today : ref);
+  const shift = (d: string) => (ref === undefined ? d : addDays(newRef, diffDays(ref, d)));
   const fields: TaskFields = { ...f };
   delete fields.done;
-  if (f.due !== undefined || f.reminder === undefined) fields.due = next;
-  if (f.reminder !== undefined && reminderDate) {
-    fields.reminder = addDays(reminderDate, delta) + f.reminder.slice(10);
-  }
-  if (f.start !== undefined) fields.start = addDays(f.start, delta);
-  if (f.scheduled !== undefined) fields.scheduled = addDays(f.scheduled, delta);
+  if (ref === undefined) fields.due = newRef;
+  if (f.due !== undefined) fields.due = shift(f.due);
+  if (f.reminder !== undefined && reminderDate) fields.reminder = shift(reminderDate) + f.reminder.slice(10);
+  if (f.start !== undefined) fields.start = shift(f.start);
+  if (f.scheduled !== undefined) fields.scheduled = shift(f.scheduled);
   if (f.created !== undefined) fields.created = today;
-  return { ...t, status: ' ', checked: false, fields };
+  // Ids and block references must stay unique: they remain on the completed line.
+  const extras = t.extras?.filter((e) => e.kind !== 'id' && e.kind !== 'cancelledDate');
+  const next: ParsedTask = { ...t, status: ' ', checked: false, cancelled: false, fields, extras };
+  delete next.blockId;
+  if (!extras || extras.length === 0) delete next.extras;
+  return next;
 }
 
 export function toggleTask(
@@ -155,22 +212,24 @@ export function toggleTask(
   const task = target ? parseTaskLine(target.text) : null;
   if (!target || !task) return { edits: [], checkedNow: false, archiveCandidate: null };
 
-  if (task.checked) {
+  if (task.checked || task.cancelled) {
     const fields = { ...task.fields };
     delete fields.done;
-    const unchecked = formatTaskLine({ ...task, fields, status: ' ', checked: false });
+    const extras = task.extras?.filter((e) => e.kind !== 'cancelledDate');
+    const reopened: ParsedTask = { ...task, status: ' ', checked: false, cancelled: false, extras };
+    if (!extras || extras.length === 0) delete reopened.extras;
     return {
-      edits: [{ from: target.start, to: target.end, insert: unchecked }],
+      edits: [{ from: target.start, to: target.end, insert: formatCleared(reopened, fields, ['done']) }],
       checkedNow: false,
       archiveCandidate: null,
     };
   }
 
   const today = todayISO(now);
+  const next = nextInstance(task, today);
   const eol = text.includes('\r\n') ? '\r\n' : '\n';
   const edits: TextEdit[] = [];
   const checkedLine = formatTaskLine(checkedCopy(task, today));
-  const next = nextInstance(task, today);
   edits.push({
     from: target.start,
     to: target.end,
@@ -178,10 +237,12 @@ export function toggleTask(
   });
 
   const texts = lines.map((l) => l.text);
+  const fenced = fencedLineSet(texts);
   const end = subtreeEnd(texts, line);
   for (let i = line + 1; i < end; i++) {
+    if (fenced.has(i)) continue;
     const child = parseTaskLine(texts[i]);
-    if (!child || child.checked) continue;
+    if (!child || !isOpenTask(child)) continue;
     edits.push({ from: lines[i].start, to: lines[i].end, insert: formatTaskLine(checkedCopy(child, today)) });
   }
 
@@ -218,7 +279,11 @@ function normalizeEdits(text: string, edits: TextEdit[]): TextEdit[] {
 export function archiveTask(text: string, id: TaskIdentity): TextEdit[] {
   const lines = splitLines(text);
   const texts = lines.map((l) => l.text);
-  const idx = texts[id.line] === id.raw ? id.line : texts.indexOf(id.raw);
+  let idx = texts[id.line] === id.raw ? id.line : -1;
+  if (idx === -1) {
+    const fenced = fencedLineSet(texts);
+    idx = texts.findIndex((t, i) => t === id.raw && !fenced.has(i));
+  }
   if (idx === -1) return [];
   const task = parseTaskLine(texts[idx]);
   if (!task || !task.checked) return [];
@@ -271,7 +336,8 @@ export function setTaskFields(text: string, line: number, patch: FieldPatch): Te
     if (value === null || value === '') delete fields[kind];
     else (fields as Record<FieldKind, string>)[kind] = value;
   }
-  const formatted = formatTaskLine({ ...task, fields });
+  const cleared = (Object.keys(patch) as FieldKind[]).filter((k) => patch[k] === null || patch[k] === '');
+  const formatted = formatCleared(task, fields, cleared);
   if (formatted === target.text) return [];
   return [{ from: target.start, to: target.end, insert: formatted }];
 }

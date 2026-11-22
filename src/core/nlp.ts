@@ -39,6 +39,8 @@ interface Parsed {
   priority?: Priority;
   remind?: boolean;
   due?: boolean;
+  /** The time is midnight at the end of the parsed day (晚上12点). */
+  nextDay?: boolean;
 }
 
 type Rule = { re: RegExp; run: (m: RegExpExecArray, p: Parsed, c: Ctx) => boolean };
@@ -128,16 +130,18 @@ function weekdayInWeek(today: string, weeks: number, wd: number): string {
   return addDays(startOfWeek(today), 7 * weeks + ((wd + 6) % 7));
 }
 
-/** Month/day with optional year; without a year, a past date rolls to next year. */
+/** Month/day with optional year; without a year, the next such date on or after today. */
 function monthDayDate(today: string, month: number, day: number, year?: number): string | null {
   if (!(month >= 1 && month <= 12 && day >= 1)) return null;
-  const y = year ?? ymd(today)[0];
-  if (day > daysInMonth(y, month)) {
-    if (year !== undefined || day > daysInMonth(y + 1, month)) return null;
-    return fromYMD(y + 1, month, day);
+  if (year !== undefined) return day <= daysInMonth(year, month) ? fromYMD(year, month, day) : null;
+  const y = ymd(today)[0];
+  // Up to 8 years ahead so that Feb 29 always finds a leap year.
+  for (let k = 0; k <= 8; k++) {
+    if (day > daysInMonth(y + k, month)) continue;
+    const date = fromYMD(y + k, month, day);
+    if (date >= today) return date;
   }
-  const date = fromYMD(y, month, day);
-  return year === undefined && date < today ? fromYMD(y + 1, month, day) : date;
+  return null;
 }
 
 /** Day of the current month, or of the next month when already past. */
@@ -158,6 +162,16 @@ function periodHour(period: string, h: number): number {
   if (period === '中午') return h <= 2 ? h + 12 : h;
   if (/^(am|a\.m\.|a)$/i.test(period)) return h === 12 ? 0 : h;
   return h;
+}
+
+/** Hour `h` (1-12) of a Chinese day period; 晚上/夜里 12点 is the following midnight. */
+function setPeriodTime(p: Parsed, period: string, h: number, min: number): boolean {
+  if (h === 12 && /^(?:今晚|明晚|晚上|夜里)$/.test(period)) {
+    if (!setTime(p, 0, min)) return false;
+    p.nextDay = true;
+    return true;
+  }
+  return setTime(p, periodHour(period, h), min);
 }
 
 /** Minutes from '半', '一刻', '三刻', '15分', '15'. */
@@ -347,11 +361,11 @@ const RULES: Rule[] = [
       if (m[2]) {
         const h = cnNum(m[2]);
         const min = zhMinutes(m[3]);
-        return h !== null && min !== null && h <= 12 && setTime(p, periodHour(period, h), min);
+        return h !== null && min !== null && h <= 12 && setPeriodTime(p, period, h, min);
       }
       if (m[5]) {
         const h = Number(m[5]);
-        return h <= 23 && setTime(p, h <= 12 ? periodHour(period, h) : h, Number(m[6]));
+        return h <= 23 && (h <= 12 ? setPeriodTime(p, period, h, Number(m[6])) : setTime(p, h, Number(m[6])));
       }
       const [h, min] = PERIOD_DEFAULT[period].split(':').map(Number);
       return setTime(p, h, min);
@@ -374,7 +388,11 @@ const RULES: Rule[] = [
   { re: rx(`next\\s+week${END}`), run: (_m, p, c) => setDate(p, weekdayInWeek(c.today, 1, 1)) },
   { re: rx(`next\\s+month${END}`), run: (_m, p, c) => setDate(p, addMonths(c.today, 1)) },
   { re: rx(`(?:the\\s+)?end\\s+of\\s+(?:the\\s+)?month${END}|eom${END}`), run: (_m, p, c) => setDate(p, endOfMonth(c.today)) },
-  { re: rx(`(?:this\\s+)?weekend${END}`), run: (_m, p, c) => setDate(p, upcomingWeekday(c.today, 6)) },
+  {
+    re: rx(`(?:this\\s+)?weekend${END}`),
+    // On a Sunday the current weekend is today (same as 周末).
+    run: (_m, p, c) => setDate(p, weekdayOf(c.today) === 0 ? c.today : upcomingWeekday(c.today, 6)),
+  },
   {
     re: rx(`(?:(next|this)\\s+)?${EN_WD}${END}`),
     run: (m, p, c) => {
@@ -544,9 +562,13 @@ interface Part {
   detail: string;
 }
 
-/** First occurrence of `r` on or after today (strictly after today when `time` has passed). */
+/**
+ * First occurrence of `r` on or after today (strictly after today when `time` has passed).
+ * Rules without fixed weekdays or day of month start today.
+ */
 function firstOccurrence(r: Recurrence, ctx: Ctx, time: string | undefined): string {
-  const first = nextOccurrence(r, addDays(ctx.today, -1));
+  const anchored = (r.weekdays !== undefined && r.weekdays.length > 0) || r.monthDay !== undefined;
+  const first = anchored ? nextOccurrence(r, addDays(ctx.today, -1)) : ctx.today;
   return first === ctx.today && time !== undefined && time <= ctx.nowTime ? nextOccurrence(r, ctx.today) : first;
 }
 
@@ -576,6 +598,9 @@ function suggestionsFor(p: Parsed, ctx: Ctx, zh: boolean): Suggestion[] {
     detail: parts.map((x) => x.detail).join(' · '),
   });
 
+  // A date given with 晚上12点 means the midnight that ends it.
+  const date = p.date !== undefined && p.nextDay ? addDays(p.date, 1) : p.date;
+
   if (p.rec) {
     const rule = formatRecurrence(p.rec);
     const parts: Part[] = [
@@ -584,19 +609,20 @@ function suggestionsFor(p: Parsed, ctx: Ctx, zh: boolean): Suggestion[] {
     ];
     if (p.time !== undefined || p.remind) {
       const time = p.time ?? '09:00';
-      parts.push(remind(p.date ?? firstOccurrence(p.rec, ctx, time), time));
-    } else if (p.date !== undefined) {
-      parts.push(due(p.date));
+      parts.push(remind(date ?? firstOccurrence(p.rec, ctx, time), time));
+    } else if (date !== undefined) {
+      parts.push(due(date));
     }
     return [combine(parts)];
   }
 
-  if (p.date !== undefined || p.time !== undefined) {
-    const date = p.date ?? (p.time !== undefined && p.time <= ctx.nowTime ? addDays(ctx.today, 1) : ctx.today);
-    if (p.remind) return [combine([...prio, remind(date, p.time ?? '09:00')])];
-    if (p.due || p.time === undefined) return [combine([...prio, due(date)])];
-    const out = [combine([...prio, remind(date, p.time)])];
-    if (p.date !== undefined) out.push(combine([...prio, due(date)]));
+  if (date !== undefined || p.time !== undefined) {
+    // Without a date, a time that has passed today (always so for midnight) means tomorrow.
+    const when = date ?? (p.time !== undefined && p.time <= ctx.nowTime ? addDays(ctx.today, 1) : ctx.today);
+    if (p.remind) return [combine([...prio, remind(when, p.time ?? '09:00')])];
+    if (p.due || p.time === undefined) return [combine([...prio, due(when)])];
+    const out = [combine([...prio, remind(when, p.time)])];
+    if (date !== undefined) out.push(combine([...prio, due(when)]));
     return out;
   }
 

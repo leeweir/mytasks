@@ -1,115 +1,120 @@
-/* Tasks editor: live-preview markdown styling. Colours follow the system appearance. */
+/* Tasks editor: live-preview markdown styling. One palette with the app shell: every --md-* points at an App.css token. */
 
 .cm-editor.tasks-editor {
-  --md-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+  --md-font: var(--font-text);
+  --md-font-display: var(--font-display);
   --md-font-mono: "SF Mono", ui-monospace, Menlo, Monaco, monospace;
-  --md-bg: #ffffff;
-  --md-fg: #1f2328;
-  --md-dim: #8a8f98;
-  --md-heading: #111418;
-  --md-mark: #a0a6ae;
-  --md-accent: #2f6fed;
-  --md-accent-soft: rgba(47, 111, 237, 0.12);
-  --md-overdue: #d93025;
-  --md-overdue-soft: rgba(217, 48, 37, 0.12);
-  --md-link: #2f6fed;
-  --md-quote: #5c6370;
-  --md-quote-bar: #d0d4da;
-  --md-border: #e3e6ea;
-  --md-selection: rgba(47, 111, 237, 0.2);
-  --md-code-bg: #f5f6f8;
-  --md-inline-code-bg: rgba(135, 145, 160, 0.16);
-  --md-badge-bg: #eef0f3;
-  --md-badge-fg: #4a5058;
-  --md-tag-bg: rgba(124, 92, 230, 0.12);
-  --md-tag-fg: #6a48d7;
-  --md-popover-bg: #ffffff;
-  --code-keyword: #a626a4;
-  --code-string: #50a14f;
-  --code-comment: #a0a1a7;
-  --code-number: #b76b01;
-  --code-type: #c18401;
-  --code-function: #4078f2;
-  --code-property: #e45649;
-  --code-tag: #e45649;
-  --code-meta: #0184bc;
+  --md-bg: var(--canvas);
+  --md-fg: var(--ink);
+  --md-dim: var(--ink-3);
+  --md-heading: var(--ink);
+  --md-mark: var(--ink-3);
+  --md-accent: var(--accent);
+  --md-accent-soft: var(--accent-soft);
+  --md-on-accent: var(--on-accent);
+  --md-overdue: var(--danger);
+  --md-overdue-soft: var(--danger-soft);
+  --md-link: var(--accent);
+  --md-quote: var(--ink-2);
+  --md-quote-bar: var(--fill-strong);
+  --md-border: var(--hairline);
+  --md-selection: var(--accent-soft);
+  --md-code-bg: var(--fill);
+  --md-inline-code-bg: var(--fill);
+  --md-badge-bg: var(--fill);
+  --md-badge-fg: var(--ink-2);
+  --md-tag-bg: var(--fill);
+  --md-tag-fg: var(--ink-2);
+  --md-popover-bg: var(--glass);
+  --md-popover-shadow: var(--shadow-pop);
+  /* Syntax colours: muted, and the function colour is the shell's cobalt. */
+  --code-keyword: #9b3fa4;
+  --code-string: #3d7d3a;
+  --code-comment: var(--ink-3);
+  --code-number: #a65e00;
+  --code-type: #8f6500;
+  --code-function: var(--accent);
+  --code-property: #c2410c;
+  --code-tag: #c2410c;
+  --code-meta: #0b7285;
+
+  --icon-calendar: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2.25' y='3.25' width='11.5' height='10.5' rx='2'/%3E%3Cpath d='M2.25 6.5h11.5M5.5 1.75v3M10.5 1.75v3'/%3E%3C/svg%3E");
+  --icon-bell: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 11.25V7.5a4 4 0 0 1 8 0v3.75l1.25 1.25H2.75zM6.5 14h3'/%3E%3C/svg%3E");
+  --icon-repeat: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.75 7.25V6.5a2 2 0 0 1 2-2h8.5M11 2.25l2.25 2.25L11 6.75M13.25 8.75v.75a2 2 0 0 1-2 2h-8.5M5 13.75L2.75 11.5 5 9.25'/%3E%3C/svg%3E");
+  --icon-flag: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.75 14.25V2.5M3.75 2.75h8.5l-1.75 3.5 1.75 3.5h-8.5'/%3E%3C/svg%3E");
+  --icon-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='8' cy='8' r='6.25'/%3E%3Cpath d='M5.5 8.2l1.7 1.7 3.3-3.6'/%3E%3C/svg%3E");
+  --icon-plus: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 3v10M3 8h10'/%3E%3C/svg%3E");
 }
 
 @media (prefers-color-scheme: dark) {
   .cm-editor.tasks-editor {
-    --md-bg: #1e1f22;
-    --md-fg: #dcdfe4;
-    --md-dim: #7d828b;
-    --md-heading: #f1f3f5;
-    --md-mark: #6b717a;
-    --md-accent: #5b9bff;
-    --md-accent-soft: rgba(91, 155, 255, 0.18);
-    --md-overdue: #ff6b5e;
-    --md-overdue-soft: rgba(255, 107, 94, 0.18);
-    --md-link: #6aa7ff;
-    --md-quote: #a3a9b2;
-    --md-quote-bar: #4a4f57;
-    --md-border: #3a3d42;
-    --md-selection: rgba(91, 155, 255, 0.3);
-    --md-code-bg: #26282c;
-    --md-inline-code-bg: rgba(160, 170, 185, 0.18);
-    --md-badge-bg: #2d3035;
-    --md-badge-fg: #c3c8cf;
-    --md-tag-bg: rgba(158, 132, 255, 0.18);
-    --md-tag-fg: #b7a3ff;
-    --md-popover-bg: #2a2c30;
-    --code-keyword: #c678dd;
-    --code-string: #98c379;
-    --code-comment: #7f848e;
-    --code-number: #d19a66;
+    --code-keyword: #d29bf0;
+    --code-string: #9ccc7f;
+    --code-number: #e3a86b;
     --code-type: #e5c07b;
-    --code-function: #61afef;
-    --code-property: #e06c75;
-    --code-tag: #e06c75;
-    --code-meta: #56b6c2;
+    --code-property: #f08c8c;
+    --code-tag: #f08c8c;
+    --code-meta: #66c2cf;
   }
 }
 
 .tasks-editor .cm-content {
   tab-size: 4;
 }
+@media (max-width: 900px) {
+  .cm-editor.tasks-editor .cm-content {
+    padding-left: 34px;
+    padding-right: 34px;
+  }
+}
 
-/* Headings */
-.tasks-editor .cm-line.cm-md-h1 { font-size: 1.75em; line-height: 1.35; padding-top: 0.5em; }
-.tasks-editor .cm-line.cm-md-h2 { font-size: 1.45em; line-height: 1.4; padding-top: 0.4em; }
-.tasks-editor .cm-line.cm-md-h3 { font-size: 1.25em; line-height: 1.45; padding-top: 0.3em; }
-.tasks-editor .cm-line.cm-md-h4 { font-size: 1.1em; }
-.tasks-editor .cm-line.cm-md-h5 { font-size: 1em; }
-.tasks-editor .cm-line.cm-md-h6 { font-size: 0.95em; color: var(--md-dim); }
+/* Headings: H1 matches the view titles; the rest step down calmly. */
+.tasks-editor .cm-line.cm-md-h1 {
+  font-family: var(--md-font-display);
+  font-size: 28px;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  padding-top: 0.6em;
+  padding-bottom: 0.15em;
+}
+.tasks-editor .cm-line.cm-md-h1:first-child { padding-top: 0; }
+.tasks-editor .cm-line.cm-md-h2 { font-size: 20px; line-height: 1.4; padding-top: 0.9em; }
+.tasks-editor .cm-line.cm-md-h3 { font-size: 17px; line-height: 1.45; padding-top: 0.6em; }
+.tasks-editor .cm-line.cm-md-h4 { font-size: 15px; }
+.tasks-editor .cm-line.cm-md-h5 { font-size: 15px; color: var(--ink-2); }
+.tasks-editor .cm-line.cm-md-h6 { font-size: 14px; color: var(--ink-2); }
 .tasks-editor .cm-line.cm-md-setext-mark { color: var(--md-mark); }
 
 /* Inline */
-.tasks-editor .cm-md-strong { font-weight: 700; }
+.tasks-editor .cm-md-strong { font-weight: 600; }
 .tasks-editor .cm-md-em { font-style: italic; }
 .tasks-editor .cm-md-strike { text-decoration: line-through; color: var(--md-dim); }
 .tasks-editor .cm-md-inline-code {
   font-family: var(--md-font-mono);
-  font-size: 0.88em;
+  font-size: 0.86em;
   background: var(--md-inline-code-bg);
-  border-radius: 4px;
-  padding: 0.1em 0.3em;
+  border-radius: 5px;
+  padding: 0.1em 0.35em;
 }
 .tasks-editor .cm-md-link {
   color: var(--md-link);
   text-decoration: underline;
-  text-decoration-color: color-mix(in srgb, var(--md-link) 40%, transparent);
-  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+  text-decoration-color: color-mix(in srgb, var(--md-link) 35%, transparent);
+  text-underline-offset: 3px;
 }
 .tasks-editor .cm-md-link[data-href] { cursor: pointer; }
+.tasks-editor .cm-md-link[data-href]:hover { text-decoration-color: var(--md-link); }
+/* Same neutral chip as `.tag` in the app's task rows. */
 .tasks-editor .cm-md-tag {
   color: var(--md-tag-fg);
   background: var(--md-tag-bg);
-  border-radius: 999px;
-  padding: 0.05em 0.45em;
-  font-size: 0.9em;
+  border-radius: 5px;
+  padding: 0.08em 0.4em;
+  font-size: 0.8em;
 }
 .tasks-editor .cm-md-indent { font-family: var(--md-font-mono); }
-.tasks-editor .cm-md-ol-mark { color: var(--md-dim); }
+.tasks-editor .cm-md-ol-mark { color: var(--md-dim); font-variant-numeric: tabular-nums; }
 .tasks-editor .cm-md-field-raw { color: var(--md-dim); }
 
 /* Blockquote */
@@ -126,40 +131,114 @@
   color: var(--md-dim);
   text-align: center;
 }
+
+/* Signature checkbox: same look as `input.check` in the app's task rows. */
 .tasks-editor .cm-md-checkbox {
+  --ring: var(--ink-3);
+  --ring-hover: var(--ink-2);
+  --ring-fill: var(--accent);
+  -webkit-appearance: none;
+  appearance: none;
   width: 1.05em;
   height: 1.05em;
-  margin: 0 0.45em 0 0.05em;
-  vertical-align: -0.15em;
-  accent-color: var(--md-accent);
+  margin: 0 0.5em 0 0.05em;
+  vertical-align: -0.2em;
+  border-radius: 50%;
+  border: 1.5px solid var(--ring);
+  background: transparent;
   cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease;
+}
+.tasks-editor .cm-md-checkbox.p-high { --ring: var(--p-high); --ring-hover: var(--p-high); --ring-fill: var(--p-high); }
+.tasks-editor .cm-md-checkbox.p-medium { --ring: var(--p-medium); --ring-hover: var(--p-medium); --ring-fill: var(--p-medium); }
+.tasks-editor .cm-md-checkbox.p-low { --ring: var(--p-low); --ring-hover: var(--p-low); --ring-fill: var(--p-low); }
+.tasks-editor .cm-md-checkbox:hover {
+  border-color: var(--ring-hover);
+  background-color: var(--fill);
+}
+.tasks-editor .cm-md-checkbox:checked {
+  border-color: var(--ring-fill);
+  background: var(--ring-fill)
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4.25 8.4l2.5 2.5 5-5.6' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+    center / 78% no-repeat;
+}
+/* Set by the widget only right after the user toggles it. */
+.tasks-editor .cm-md-checkbox.is-popping {
+  animation: check-pop 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.tasks-editor .cm-md-checkbox.is-cancelled {
+  border-style: dashed;
+  border-color: var(--ink-3);
+  background: linear-gradient(var(--ink-3), var(--ink-3)) center / 45% 1.5px no-repeat;
 }
 .tasks-editor .cm-line.cm-md-task-done {
   color: var(--md-dim);
   text-decoration: line-through;
-  text-decoration-color: color-mix(in srgb, var(--md-dim) 70%, transparent);
+  text-decoration-color: var(--md-dim);
 }
 
-/* Field badges */
+/* Front matter: muted monospace block, no heading/hr rendering */
+.tasks-editor .cm-line.cm-md-frontmatter {
+  font-family: var(--md-font-mono);
+  font-size: 0.86em;
+  color: var(--ink-2);
+  background: var(--md-code-bg);
+  padding: 0 14px;
+}
+
+/* Field badges: quiet meta chips with a line icon keyed by data-kind. */
 .tasks-editor .cm-md-badge {
-  display: inline-block;
+  --badge-icon: var(--icon-calendar);
+  --badge-icon-color: currentColor;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
   margin: 0 0.15em;
-  padding: 0 0.55em;
-  border-radius: 999px;
+  padding: 0 0.45em;
+  border-radius: 5px;
   background: var(--md-badge-bg);
   color: var(--md-badge-fg);
-  font-size: 0.78em;
-  line-height: 1.65;
+  font-size: 0.8em;
+  line-height: 1.7;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
-  vertical-align: 0.08em;
+  vertical-align: 0.06em;
+  text-decoration: none;
   cursor: pointer;
   user-select: none;
   -webkit-user-select: none;
 }
-.tasks-editor .cm-md-badge:hover { filter: brightness(0.95); }
+.tasks-editor .cm-md-badge::before {
+  content: "";
+  flex: none;
+  width: 1em;
+  height: 1em;
+  background: var(--badge-icon-color);
+  -webkit-mask: var(--badge-icon) center / contain no-repeat;
+  mask: var(--badge-icon) center / contain no-repeat;
+}
+.tasks-editor .cm-md-badge[data-kind="reminder"] { --badge-icon: var(--icon-bell); }
+.tasks-editor .cm-md-badge[data-kind="recurrence"] { --badge-icon: var(--icon-repeat); }
+.tasks-editor .cm-md-badge[data-kind="priority"] { --badge-icon: var(--icon-flag); }
+.tasks-editor .cm-md-badge[data-kind="done"] { --badge-icon: var(--icon-check); }
+.tasks-editor .cm-md-badge[data-kind="created"] { --badge-icon: var(--icon-plus); }
+.tasks-editor .cm-md-badge.is-p-highest,
+.tasks-editor .cm-md-badge.is-p-high { --badge-icon-color: var(--p-high); }
+.tasks-editor .cm-md-badge.is-p-medium { --badge-icon-color: var(--p-medium); }
+.tasks-editor .cm-md-badge.is-p-low,
+.tasks-editor .cm-md-badge.is-p-lowest { --badge-icon-color: var(--p-low); }
+.tasks-editor .cm-md-badge:hover { background: var(--fill-strong); }
 .tasks-editor .cm-md-badge.is-today { background: var(--md-accent-soft); color: var(--md-accent); }
 .tasks-editor .cm-md-badge.is-overdue { background: var(--md-overdue-soft); color: var(--md-overdue); }
-.tasks-editor .cm-md-task-done .cm-md-badge { opacity: 0.65; }
+.tasks-editor .cm-md-badge.is-invalid {
+  background: none;
+  color: var(--md-overdue);
+  outline: 1px dashed var(--md-overdue);
+  outline-offset: -1px;
+}
+.tasks-editor .cm-md-task-done .cm-md-badge { opacity: 0.6; --badge-icon-color: currentColor; }
 
 /* Horizontal rule */
 .tasks-editor .cm-md-hr {
@@ -175,50 +254,65 @@
   display: block;
   max-width: 100%;
   max-height: 400px;
-  margin: 4px 0;
-  border-radius: 6px;
+  margin: 6px 0;
+  border-radius: 8px;
 }
 .tasks-editor .cm-md-image.is-broken { color: var(--md-dim); font-size: 0.9em; }
 
 /* Code blocks */
 .tasks-editor .cm-line.cm-md-codeblock {
   font-family: var(--md-font-mono);
-  font-size: 0.88em;
+  font-size: 0.86em;
   background: var(--md-code-bg);
-  padding: 0 14px;
+  padding: 0 16px;
 }
-.tasks-editor .cm-line.cm-md-codeblock-begin { border-radius: 6px 6px 0 0; padding-top: 4px; }
-.tasks-editor .cm-line.cm-md-codeblock-end { border-radius: 0 0 6px 6px; padding-bottom: 4px; }
-.tasks-editor .cm-line.cm-md-codeblock-begin.cm-md-codeblock-end { border-radius: 6px; }
+.tasks-editor .cm-line.cm-md-codeblock-begin { border-radius: 8px 8px 0 0; padding-top: 6px; }
+.tasks-editor .cm-line.cm-md-codeblock-end { border-radius: 0 0 8px 8px; padding-bottom: 6px; }
+.tasks-editor .cm-line.cm-md-codeblock-begin.cm-md-codeblock-end { border-radius: 8px; }
 .tasks-editor .cm-line.cm-md-fence-hidden { font-size: 0.72em; line-height: 1.4; color: var(--md-dim); }
-.tasks-editor .cm-md-fence-label { font-family: var(--md-font); letter-spacing: 0.02em; }
-.tasks-editor .cm-line.cm-md-table-raw { font-family: var(--md-font-mono); font-size: 0.88em; }
+.tasks-editor .cm-md-fence-label { font-family: var(--md-font); }
+.tasks-editor .cm-line.cm-md-table-raw { font-family: var(--md-font-mono); font-size: 0.86em; }
 
-/* Rendered tables */
+/* Rendered tables: hairline grid inside a rounded container. */
 .tasks-editor .cm-md-table {
   overflow-x: auto;
-  padding: 6px 0;
+  padding: 8px 0;
   cursor: text;
 }
 .tasks-editor .cm-md-table table {
-  border-collapse: collapse;
-  font-size: 0.94em;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid var(--md-border);
+  border-radius: 8px;
+  overflow: hidden;
+  font-size: 14px;
   line-height: 1.5;
 }
 .tasks-editor .cm-md-table th,
 .tasks-editor .cm-md-table td {
-  border: 1px solid var(--md-border);
-  padding: 5px 12px;
+  padding: 6px 14px;
+  border: 0;
+  border-right: 1px solid var(--md-border);
+  border-bottom: 1px solid var(--md-border);
   white-space: normal;
   vertical-align: top;
 }
-.tasks-editor .cm-md-table th { background: var(--md-code-bg); font-weight: 600; text-align: left; }
+.tasks-editor .cm-md-table tr > :last-child { border-right: 0; }
+.tasks-editor .cm-md-table tr:last-child > td { border-bottom: 0; }
+.tasks-editor .cm-md-table th { background: var(--md-code-bg); font-weight: 600; text-align: left; color: var(--ink-2); font-size: 13px; }
 .tasks-editor .cm-md-table code {
   font-family: var(--md-font-mono);
   font-size: 0.9em;
   background: var(--md-inline-code-bg);
-  border-radius: 4px;
+  border-radius: 5px;
   padding: 0.1em 0.3em;
 }
 .tasks-editor .cm-md-table a { color: var(--md-link); cursor: pointer; }
 .tasks-editor .cm-md-table img { max-width: 100%; max-height: 200px; }
+
+/* `check-pop` keyframes live in App.css with the row checkbox. */
+
+@media (prefers-reduced-motion: reduce) {
+  .tasks-editor .cm-md-checkbox { transition: none; }
+  .tasks-editor .cm-md-checkbox.is-popping { animation: none; }
+}

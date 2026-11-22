@@ -1,8 +1,8 @@
-import { convertFileSrc } from "@tauri-apps/api/core";
 import MarkdownIt from "markdown-it";
 import { parser, GFM } from "@lezer/markdown";
+import { fileUrl } from "../backend";
 import { applyEdits, type TextEdit } from "../core";
-import { markdownPath, resolveRelative } from "./paths";
+import { rebaseUrl, resolveRelative } from "./paths";
 
 const md = new MarkdownIt({ html: false, linkify: true, typographer: false });
 
@@ -44,7 +44,7 @@ function escapeHtml(s: string) {
 
 async function toDataUrl(url: string): Promise<string> {
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`无法读取导出图片 (${res.status})：${url}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const bytes = new Uint8Array(await res.arrayBuffer());
   let bin = "";
   for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
@@ -52,39 +52,53 @@ async function toDataUrl(url: string): Promise<string> {
   return `data:${type};base64,${btoa(bin)}`;
 }
 
-/** Standalone HTML for a list; local images are embedded as data URLs so the file is self-contained. */
-export async function renderExportHtml(path: string, content: string): Promise<string> {
+export interface ExportedHtml {
+  html: string;
+  /** Local image sources that could not be embedded; they keep a link to the original file. */
+  failedImages: string[];
+}
+
+/**
+ * Standalone HTML for a list written to `outFile`: local images are embedded as data URLs
+ * and relative links are rebased so they still reach the original files from `outFile`.
+ */
+export async function renderExportHtml(path: string, content: string, outFile: string): Promise<ExportedHtml> {
   const title = path.split("/").pop()!.replace(/\.md$/i, "");
   const doc = new DOMParser().parseFromString(md.render(content), "text/html");
+  for (const a of doc.querySelectorAll("a[href]")) {
+    const rebased = rebaseUrl(path, outFile, a.getAttribute("href")!);
+    if (rebased !== null) a.setAttribute("href", rebased);
+  }
+  const failedImages: string[] = [];
   await Promise.all(
     [...doc.querySelectorAll("img")].map(async (img) => {
       const src = img.getAttribute("src") ?? "";
       if (/^(https?:|data:)/.test(src)) return;
-      img.setAttribute("src", await toDataUrl(convertFileSrc(resolveRelative(path, src))));
+      const boundary = src.search(/[?#]/);
+      const file = boundary < 0 ? src : src.slice(0, boundary);
+      try {
+        if (!file) throw new Error("empty image path");
+        img.setAttribute("src", await toDataUrl(fileUrl(resolveRelative(path, file))));
+      } catch {
+        failedImages.push(src);
+        const rebased = rebaseUrl(path, outFile, src);
+        if (rebased !== null) img.setAttribute("src", rebased);
+      }
     }),
   );
-  return `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>${CSS}</style></head><body>${doc.body.innerHTML}</body></html>`;
+  const html = `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>${CSS}</style></head><body>${doc.body.innerHTML}</body></html>`;
+  return { html, failedImages };
 }
 
 /** A Markdown copy keeps local links working at its new location; the original attachments stay in the vault. */
 export function rebaseMarkdown(fromFile: string, outFile: string, content: string): string {
   const edits: TextEdit[] = [];
-  const destination = outFile.split("/").slice(0, -1);
   parser.configure(GFM).parse(content).iterate({
     enter(node) {
       if (node.name !== "URL" || !["Image", "Link", "LinkReference"].includes(node.node.parent?.name ?? "")) return;
       const raw = content.slice(node.from, node.to);
-      const url = raw.startsWith("<") ? raw.slice(1, -1) : raw;
-      if (/^(?:[a-z][a-z\d+.-]*:|\/|#)/i.test(url)) return;
-      const boundary = url.search(/[?#]/);
-      const path = boundary < 0 ? url : url.slice(0, boundary);
-      if (!path) return;
-      const suffix = boundary < 0 ? "" : url.slice(boundary);
-      const target = resolveRelative(fromFile, path).split("/");
-      let common = 0;
-      while (common < destination.length && common < target.length && destination[common] === target[common]) common++;
-      const rel = [...Array<string>(destination.length - common).fill(".."), ...target.slice(common)].join("/");
-      edits.push({ from: node.from, to: node.to, insert: markdownPath(rel) + suffix });
+      const rebased = rebaseUrl(fromFile, outFile, raw.startsWith("<") ? raw.slice(1, -1) : raw);
+      if (rebased !== null) edits.push({ from: node.from, to: node.to, insert: rebased });
     },
   });
   return applyEdits(content, edits);

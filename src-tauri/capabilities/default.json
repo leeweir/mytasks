@@ -5,7 +5,9 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "dialog:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-internal-toggle-maximize",
+    "dialog:allow-ask",
     "opener:default"
   ]
 }

@@ -1,9 +1,12 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { ask, open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { openPath, openUrl } from "@tauri-apps/plugin-opener";
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type MouseEvent } from "react";
+import { ask } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent } from "react";
 import {
   allowExit,
+  cancelExit,
+  chooseExportPath,
+  chooseVault as pickVault,
   onExitRequested,
   createDir,
   createFile,
@@ -11,29 +14,49 @@ import {
   getVault,
   onMenu,
   onVaultChanged,
+  openVaultPath,
   renamePath,
   saveAttachment,
-  scheduleReminders,
-  setVault,
   trashPath,
-  writeFile,
+  writeExport,
+  type ExportKind,
   type MenuId,
 } from "./backend";
-import { pendingReminders, todayISO, type FieldKind } from "./core";
+import { listNameOf, todayISO, type FieldKind } from "./core";
 import { EditorPane } from "./app/EditorPane";
-import { markdownPath, resolveRelative } from "./app/paths";
+import { markdownPath } from "./app/paths";
 import { renderExportHtml, rebaseMarkdown } from "./app/exporter";
 import { FieldPopover, type FieldTarget } from "./app/FieldPopover";
-import { ConflictDialog, ContextMenu, PromptDialog, type MenuItem } from "./app/overlays";
-import { closeSession, currentSession, flush, resolveConflict, sessionStatus, toggle } from "./app/session";
-import { cancelArchives, flushArchives } from "./app/session";
+import { Icon } from "./app/icons";
+import { classifyLink, findHeadingLine } from "./app/links";
+import { ConflictDialog, ContextMenu, PromptDialog, SaveErrorBar, type MenuItem } from "./app/overlays";
+import { syncReminders } from "./app/reminders";
+import {
+  cancelArchives,
+  closeSession,
+  currentSession,
+  discardChanges,
+  documentText,
+  flush,
+  flushArchives,
+  flushCurrent,
+  forgetAll,
+  localCopy,
+  resolveConflict,
+  retrySave,
+  sessionStatus,
+  toggle,
+} from "./app/session";
 import { Sidebar, type TreeTarget, type View } from "./app/Sidebar";
+import { lineText } from "./app/text";
 import { toast, Toasts } from "./app/toast";
 import { vault } from "./app/vault";
 import { DoneView, SearchView, TagView, TodayView, UpcomingView, type RowActions } from "./app/views";
 import "./App.css";
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|heic|svg|bmp|tiff?)$/i;
+/** Rust awaits notification authorization; a first-run prompt must not hold up quitting. */
+const EXIT_REMINDER_TIMEOUT_MS = 2000;
 
 type Prompt = { title: string; initial: string; confirmLabel?: string; onSubmit(value: string): void };
 
@@ -46,6 +69,8 @@ export default function App() {
   const state = useSyncExternalStore(vault.subscribe, vault.get);
   const [booting, setBooting] = useState(true);
   const [view, setView] = useState<View>({ kind: "today" });
+  // Bumped whenever the session was closed while the editor stays on screen, so it remounts and reattaches.
+  const [sessionEpoch, setSessionEpoch] = useState(0);
   const [query, setQuery] = useState("");
   const [searchText, setSearchText] = useState("");
   const searchRequest = useRef(0);
@@ -67,47 +92,69 @@ export default function App() {
   const openPathRef = useRef<string | null>(null);
   openPathRef.current = view.kind === "file" ? view.path : null;
 
-  // ---- vault lifecycle ----
-  const loadVault = useCallback(async (root: string) => {
-    await setVault(root);
-    await vault.load(root);
+  const leaveDeleted = useCallback((path: string) => {
+    setView((current) => current.kind === "file" && current.path === path ? { kind: "today" } : current);
   }, []);
 
+  // ---- vault lifecycle ----
   useEffect(() => {
     getVault()
       .then(async (root) => {
-        if (root) await loadVault(root);
+        if (root) await vault.load(root);
       })
       .catch((e) => toast.show({ text: `无法打开文件夹：${String(e)}` }))
       .finally(() => setBooting(false));
-  }, [loadVault]);
+  }, []);
 
   const chooseVault = useCallback(async () => {
     try {
-      const picked = await openDialog({ directory: true, title: "选择任务文件夹" });
-      if (typeof picked !== "string") return;
+      // The backend refuses writes outside the active vault, so everything is saved first.
       await flushArchives();
       await flush();
-      cancelArchives();
-      await closeSession();
-      await loadVault(picked);
-      setView({ kind: "today" });
-      clearSearch();
+    } catch (e) {
+      toast.show({ text: `请先保存或解决冲突：${String(e)}` });
+      return;
+    }
+    let picked: string | null;
+    try {
+      picked = await pickVault();
     } catch (e) {
       toast.show({ text: `无法切换文件夹：${String(e)}` });
+      return;
     }
-  }, [loadVault, clearSearch]);
+    if (!picked) return;
+    forgetAll();
+    setView({ kind: "today" });
+    setJump(null);
+    clearSearch();
+    setSessionEpoch((n) => n + 1);
+    vault.switchTo(picked);
+    try {
+      await vault.load(picked);
+    } catch (e) {
+      toast.show({ text: `无法读取文件夹：${String(e)}` });
+    }
+  }, [clearSearch]);
 
   // All vault loads reconcile through persistence before publishing the new index.
   useEffect(() => {
     let timer: number | undefined;
     let disposed = false;
-    const un = onVaultChanged(() => {
+    let paths = new Set<string>();
+    let full = false;
+    const un = onVaultChanged((change) => {
+      full ||= change.full;
+      for (const p of change.paths) paths.add(p);
       window.clearTimeout(timer);
       timer = window.setTimeout(() => {
         const root = vault.get().root;
+        const batch = [...paths];
+        const reloadAll = full;
+        paths = new Set();
+        full = false;
         if (!root || disposed) return;
-        void vault.load(root).catch((e) => toast.show({ text: `读取外部修改失败：${String(e)}` }));
+        void (reloadAll ? vault.load(root) : vault.refresh(root, batch))
+          .catch((e) => toast.show({ text: `读取外部修改失败：${String(e)}` }));
       }, 120);
     });
     return () => {
@@ -117,14 +164,24 @@ export default function App() {
     };
   }, []);
 
+  // Each skipped file is reported once per session.
+  const reportedSkips = useRef(new Set<string>());
+  useEffect(() => {
+    const fresh = state.skipped.filter((s) => !reportedSkips.current.has(`${s.rel}\n${s.reason}`));
+    if (!fresh.length) return;
+    for (const s of fresh) reportedSkips.current.add(`${s.rel}\n${s.reason}`);
+    const shown = fresh.slice(0, 5).map((s) => `${s.rel}（${s.reason}）`).join("、");
+    toast.show({
+      text: `已跳过 ${fresh.length} 个无法读取的文件（非 UTF-8 或无权限）：${shown}${fresh.length > 5 ? " 等" : ""}`,
+      durationMs: 10_000,
+    });
+  }, [state.skipped]);
+
   const resolveDiskConflict = async (choice: "local" | "disk") => {
     if (!conflict || resolvingConflict) return;
     setResolvingConflict(true);
     try {
-      const deleted = await resolveConflict(conflict, choice);
-      if (deleted) {
-        setView((current) => current.kind === "file" && current.path === conflict.path ? { kind: "today" } : current);
-      }
+      if (await resolveConflict(conflict, choice)) leaveDeleted(conflict.path);
     } catch (e) {
       toast.show({ text: `无法处理冲突：${String(e)}` });
     } finally {
@@ -139,23 +196,19 @@ export default function App() {
   }, []);
 
   // Keep scheduled notifications in sync with ⏰ fields.
-  const lastReminders = useRef("");
   useEffect(() => {
     if (!state.loaded) return;
     const id = window.setTimeout(() => {
-      const items = pendingReminders([...state.tasks], new Date());
-      const key = JSON.stringify(items);
-      if (key === lastReminders.current) return;
-      lastReminders.current = key;
-      scheduleReminders(items).catch((e) => toast.show({ text: `提醒设置失败：${String(e)}` }));
+      syncReminders(state.tasks, new Date()).catch((e) => toast.show({ text: `提醒设置失败：${String(e)}` }));
     }, 1500);
     return () => window.clearTimeout(id);
   }, [state.tasks, state.loaded, today]);
 
   // ---- navigation ----
+  // Only the open document must be saved before leaving it; other failures stay in the error bar.
   const openFile = useCallback(async (path: string, line: number | null = null) => {
     try {
-      await flush();
+      await flushCurrent();
       clearSearch();
       setView({ kind: "file", path });
       setJump(line === null ? null : { line });
@@ -166,7 +219,7 @@ export default function App() {
 
   const go = useCallback(async (v: View) => {
     try {
-      await flush();
+      await flushCurrent();
       clearSearch();
       setView(v);
       setJump(null);
@@ -182,7 +235,7 @@ export default function App() {
     if (composing) return;
     try {
       // Keep the editor mounted until its pending changes have been saved.
-      await flush();
+      await flushCurrent();
       if (request === searchRequest.current) setQuery(text);
     } catch (e) {
       if (request === searchRequest.current) {
@@ -203,8 +256,8 @@ export default function App() {
           try {
             const rel = `${dirRel ? `${dirRel}/` : ""}${name}.md`;
             const path = await createFile(rel, `# ${name}\n\n- [ ] `);
-            await vault.load(vault.get().root!);
-            openFile(path, 2);
+            await vault.refresh(vault.get().root!, [path]);
+            void openFile(path, 2);
           } catch (e) {
             toast.show({ text: `创建失败：${String(e)}` });
           }
@@ -241,26 +294,37 @@ export default function App() {
         confirmLabel: "重命名",
         onSubmit: async (name) => {
           setPrompt(null);
+          const parent = dirOfRel(t.rel);
+          const newRel = `${parent ? `${parent}/` : ""}${name}${t.isDir ? "" : ".md"}`;
+          if (newRel === t.rel) return;
           const open = openPathRef.current;
           const affectsOpen = !!open && (open === t.path || open.startsWith(`${t.path}/`));
+          let reopen = open;
+          let closed = false;
           try {
             await flushArchives();
-            await flush();
+            await flush(t.path);
             cancelArchives(t.path);
-            if (affectsOpen) await closeSession();
-            const parent = dirOfRel(t.rel);
-            const newRel = `${parent ? `${parent}/` : ""}${name}${t.isDir ? "" : ".md"}`;
+            if (affectsOpen) {
+              await closeSession();
+              closed = true;
+            }
             const newPath = await renamePath(t.path, newRel);
+            if (affectsOpen) reopen = t.isDir ? newPath + open!.slice(t.path.length) : newPath;
             await vault.load(vault.get().root!);
-            if (affectsOpen) openFile(t.isDir ? newPath + open!.slice(t.path.length) : newPath);
           } catch (e) {
             toast.show({ text: `重命名失败：${String(e)}` });
-            if (affectsOpen) openFile(open!);
+          } finally {
+            // The closed session must be reattached even when the path did not change.
+            if (closed) {
+              setView({ kind: "file", path: reopen! });
+              setSessionEpoch((n) => n + 1);
+            }
           }
         },
       });
     },
-    [openFile],
+    [],
   );
 
   const remove = useCallback(async (t: TreeTarget) => {
@@ -268,7 +332,7 @@ export default function App() {
     if (!ok) return;
     const open = openPathRef.current;
     try {
-      await flush();
+      await flush(t.path);
       cancelArchives(t.path);
       if (open && (open === t.path || open.startsWith(`${t.path}/`))) {
         await closeSession();
@@ -300,26 +364,25 @@ export default function App() {
   );
 
   // ---- export ----
-  const doExport = useCallback(async (kind: "pdf" | "html" | "md") => {
+  const doExport = useCallback(async (kind: ExportKind) => {
     const s = currentSession();
     if (!s) {
       toast.show({ text: "请先打开一个清单" });
       return;
     }
     try {
-      await flush();
-      const content = s.handle.getDoc();
-      const base = s.path.split("/").pop()!.replace(/\.md$/i, "");
-      const out = await saveDialog({
-        title: "导出",
-        defaultPath: `${base}${kind === "md" ? " 副本" : ""}.${kind}`,
-        filters: [{ name: kind.toUpperCase(), extensions: [kind] }],
-      });
+      await flush(s.path);
+      const content = s.doc;
+      const out = await chooseExportPath(`${listNameOf(s.path)}${kind === "md" ? " 副本" : ""}.${kind}`, kind);
       if (!out) return;
-      if (kind === "md") await writeFile(out, rebaseMarkdown(s.path, out, content));
+      // A Markdown copy saved inside the vault is not an own write, so the watcher indexes it.
+      if (kind === "md") await writeExport(out, rebaseMarkdown(s.path, out, content));
       else {
-        const html = await renderExportHtml(s.path, content);
-        if (kind === "html") await writeFile(out, html);
+        const { html, failedImages } = await renderExportHtml(s.path, content, out);
+        if (failedImages.length) {
+          toast.show({ text: `${failedImages.length} 张图片无法嵌入，已保留原链接：${failedImages.slice(0, 3).join("、")}` });
+        }
+        if (kind === "html") await writeExport(out, html);
         else await exportPdf(html, out);
       }
       toast.show({ text: `已导出到 ${out.split("/").pop()}` });
@@ -327,6 +390,32 @@ export default function App() {
       toast.show({ text: `导出失败：${String(e)}` });
     }
   }, []);
+
+  // ---- failed saves ----
+  const saveCopy = useCallback(async (path: string) => {
+    const text = localCopy(path);
+    if (text === null) return;
+    try {
+      const out = await chooseExportPath(`${listNameOf(path)} 副本.md`, "md");
+      if (!out) return;
+      await writeExport(out, rebaseMarkdown(path, out, text));
+      toast.show({ text: `已另存到 ${out.split("/").pop()}` });
+    } catch (e) {
+      toast.show({ text: `另存失败：${String(e)}` });
+    }
+  }, []);
+
+  const discard = useCallback(async (path: string) => {
+    const ok = await ask(`放弃 “${path.split("/").pop()}” 未保存的修改，并载入磁盘上的版本？`, {
+      title: "放弃本地修改", kind: "warning", okLabel: "放弃修改", cancelLabel: "取消",
+    });
+    if (!ok) return;
+    try {
+      if (await discardChanges(path)) leaveDeleted(path);
+    } catch (e) {
+      toast.show({ text: `无法载入磁盘版本：${String(e)}` });
+    }
+  }, [leaveDeleted]);
 
   // ---- menu ----
   const menuHandler = useRef<(id: MenuId) => void>(() => undefined);
@@ -353,16 +442,16 @@ export default function App() {
       case "toggle-task":
         return currentSession()?.handle.toggleTaskAtCursor();
       case "view-today":
-        return go({ kind: "today" });
+        return void go({ kind: "today" });
       case "view-upcoming":
-        return go({ kind: "upcoming" });
+        return void go({ kind: "upcoming" });
       case "view-tags":
-        return go({ kind: "tags", tag: null });
+        return void go({ kind: "tags", tag: null });
       case "view-done":
-        return go({ kind: "done" });
+        return void go({ kind: "done" });
       case "view-lists": {
         const first = [...state.files.values()].sort((a, b) => a.rel.localeCompare(b.rel, "zh"))[0];
-        if (first) openFile(first.path);
+        if (first) void openFile(first.path);
         return;
       }
     }
@@ -378,10 +467,21 @@ export default function App() {
         try {
           await flushArchives();
           await flush();
-          await allowExit();
         } catch (e) {
           toast.show({ text: `尚未退出，请先保存或解决冲突：${String(e)}` });
+          // A pending logout must be cancelled rather than left waiting for this window.
+          await cancelExit().catch((err) => console.error("Cancelling exit failed:", err));
+          return;
         }
+        // Register reminders added or removed just before quitting. Neither a refusal nor a
+        // first-run permission prompt may block quitting. (tsconfig lib ES2020: no Promise.withResolvers.)
+        if (vault.get().loaded) {
+          await Promise.race([
+            syncReminders(vault.get().tasks, new Date()).catch((e) => console.error("Reminder scheduling failed:", e)),
+            new Promise((resolve) => window.setTimeout(resolve, EXIT_REMINDER_TIMEOUT_MS)),
+          ]);
+        }
+        await allowExit();
       })();
     });
     return () => void un.then((f) => f());
@@ -413,32 +513,52 @@ export default function App() {
   // ---- links ----
   const openLink = useCallback(
     (href: string) => {
-      if (/^[a-z][a-z0-9+.-]*:/i.test(href)) {
-        void openUrl(href).catch((e) => toast.show({ text: `无法打开链接：${String(e)}` }));
-        return;
-      }
       const from = openPathRef.current;
       if (!from) return;
-      const target = resolveRelative(from, href.split("#")[0]);
-      if (vault.get().files.has(target)) openFile(target);
-      else void openPath(target).catch((e) => toast.show({ text: `无法打开：${String(e)}` }));
+      const target = classifyLink(from, href);
+      switch (target.kind) {
+        case "url":
+          void openUrl(target.url).catch((e) => toast.show({ text: `无法打开链接：${String(e)}` }));
+          return;
+        case "unsupported":
+          toast.show({ text: `不支持打开此类链接：${target.url}` });
+          return;
+        case "heading": {
+          const s = currentSession();
+          const line = s ? findHeadingLine(s.handle.getDoc(), target.fragment) : null;
+          if (line === null) toast.show({ text: `找不到标题：${target.fragment}` });
+          else setJump({ line });
+          return;
+        }
+        case "file": {
+          if (!vault.get().files.has(target.path)) {
+            void openVaultPath(target.path).catch((e) => toast.show({ text: `无法打开：${String(e)}` }));
+            return;
+          }
+          const line = target.fragment ? findHeadingLine(documentText(target.path) ?? "", target.fragment) : null;
+          if (target.path !== from) void openFile(target.path, line);
+          else if (line !== null) setJump({ line });
+        }
+      }
     },
     [openFile],
   );
 
-  const rowActions: RowActions = {
-    today,
-    open: (path, line) => openFile(path, line),
-    editField: setField,
-  };
+  const rowActions: RowActions = useMemo(
+    () => ({ today, open: (path, line) => void openFile(path, line), editField: setField }),
+    [today, openFile],
+  );
 
-  const onBadge = useCallback((line: number, kind: FieldKind, rect: DOMRect) => {
+  const onBadge = useCallback((line: number, text: string, kind: FieldKind, rect: DOMRect) => {
     const path = openPathRef.current;
-    if (path) setField({ path, line, kind, rect });
+    if (path) setField({ path, line, raw: text, kind, rect });
   }, []);
   const onToggle = useCallback((line: number) => {
-    const path = openPathRef.current;
-    if (path) void toggle(path, line).catch(() => undefined);
+    const s = currentSession();
+    if (!s || s.path !== openPathRef.current) return;
+    // The editor document is current at request time; the line text pins the task.
+    const raw = lineText(s.handle.getDoc(), line);
+    if (raw !== undefined) void toggle(s.path, line, raw).catch(() => undefined);
   }, []);
 
   if (booting) return <div className="welcome" />;
@@ -446,8 +566,9 @@ export default function App() {
   if (!state.root) {
     return (
       <div className="welcome">
+        <div className="welcome-drag" data-tauri-drag-region />
         <div className="welcome-card">
-          <div className="welcome-icon">☑︎</div>
+          <span className="welcome-mark" aria-hidden="true" />
           <h1>Tasks</h1>
           <p>选择一个文件夹存放你的任务清单。每个 .md 文件就是一个清单，可以用任何编辑器打开。</p>
           <button className="primary big" onClick={() => void chooseVault()}>
@@ -462,36 +583,23 @@ export default function App() {
   const openFileState = view.kind === "file" ? state.files.get(view.path) : undefined;
 
   let main;
-  if (query.trim()) main = <SearchView state={state} query={query.trim()} actions={rowActions} />;
+  if (query.trim()) main = <SearchView files={state.files} query={query.trim()} actions={rowActions} />;
   else if (view.kind === "today") main = <TodayView tasks={state.tasks} actions={rowActions} />;
   else if (view.kind === "upcoming") main = <UpcomingView tasks={state.tasks} actions={rowActions} />;
   else if (view.kind === "tags")
-    main = <TagView tasks={state.tasks} tag={view.tag} onSelectTag={(tag) => go({ kind: "tags", tag })} actions={rowActions} />;
+    main = <TagView tasks={state.tasks} tag={view.tag} onSelectTag={(tag) => void go({ kind: "tags", tag })} actions={rowActions} />;
   else if (view.kind === "done") main = <DoneView tasks={state.tasks} actions={rowActions} />;
   else if (openFileState)
     main = (
-      <div className="file-view">
-        <div className="file-header">
-          <span className="crumb">{openFileState.rel.replace(/\.md$/i, "").split("/").join(" / ")}</span>
-          <button className="header-action" onClick={(e) => setMenu({
-            x: Math.min(e.clientX, window.innerWidth - 176), y: e.clientY + 8,
-            items: [
-              { label: "导出 PDF…", run: () => void doExport("pdf") },
-              { label: "导出 HTML…", run: () => void doExport("html") },
-              { label: "导出 Markdown 副本…", run: () => void doExport("md") },
-            ],
-          })}>导出</button>
-        </div>
-        <EditorPane
-          key={openFileState.path}
-          path={openFileState.path}
-          content={openFileState.content}
-          jump={jump}
-          onBadge={onBadge}
-          onToggle={onToggle}
-          onOpenLink={openLink}
-        />
-      </div>
+      <EditorPane
+        key={`${openFileState.path}\n${sessionEpoch}`}
+        path={openFileState.path}
+        content={openFileState.content}
+        jump={jump}
+        onBadge={onBadge}
+        onToggle={onToggle}
+        onOpenLink={openLink}
+      />
     );
   else main = <div className="empty">清单不存在</div>;
 
@@ -505,12 +613,47 @@ export default function App() {
         searchText={searchText}
         searchRef={searchRef}
         onQuery={(text, composing) => void search(text, composing)}
-        onView={(v) => (v.kind === "file" ? openFile(v.path) : go(v))}
+        onView={(v) => void (v.kind === "file" ? openFile(v.path) : go(v))}
         onContext={onContext}
         onNewList={() => newList("")}
         onChooseVault={() => void chooseVault()}
       />
-      <main className="main">{main}</main>
+      <main className="main">
+        <header className="topbar" data-tauri-drag-region>
+          {!query.trim() && openFileState && (
+            <>
+              <span className="crumb" data-tauri-drag-region>
+                {openFileState.rel.replace(/\.md$/i, "").split("/").join(" / ")}
+              </span>
+              <button
+                className="icon-btn topbar-action"
+                aria-label="导出"
+                title="导出"
+                onClick={(e) => {
+                  const r = e.currentTarget.getBoundingClientRect();
+                  setMenu({
+                    x: Math.max(8, Math.min(r.right - 180, window.innerWidth - 188)), y: r.bottom + 6,
+                    items: [
+                      { label: "导出 PDF…", run: () => void doExport("pdf") },
+                      { label: "导出 HTML…", run: () => void doExport("html") },
+                      { label: "导出 Markdown 副本…", run: () => void doExport("md") },
+                    ],
+                  });
+                }}
+              >
+                <Icon name="share" />
+              </button>
+            </>
+          )}
+        </header>
+        <SaveErrorBar
+          errors={persistence.errors}
+          onRetry={(path) => void retrySave(path).catch(() => undefined)}
+          onSaveCopy={(path) => void saveCopy(path)}
+          onDiscard={(path) => void discard(path)}
+        />
+        <div className="main-body">{main}</div>
+      </main>
       {field && <FieldPopover target={field} onClose={() => setField(null)} />}
       {prompt && <PromptDialog {...prompt} onCancel={() => setPrompt(null)} />}
       {menu && <ContextMenu {...menu} onClose={() => setMenu(null)} />}

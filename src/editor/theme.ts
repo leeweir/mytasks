@@ -7,7 +7,7 @@ const MONO = 'var(--md-font-mono)';
 
 const highlightStyle = HighlightStyle.define([
   // Markdown structure
-  { tag: t.heading, fontWeight: '700', color: 'var(--md-heading)' },
+  { tag: t.heading, fontWeight: '600', color: 'var(--md-heading)' },
   { tag: t.strong, fontWeight: '700' },
   { tag: t.emphasis, fontStyle: 'italic' },
   { tag: t.strikethrough, textDecoration: 'line-through' },
@@ -39,13 +39,14 @@ const editorTheme = EditorView.theme({
   '&.cm-focused': { outline: 'none' },
   '.cm-scroller': {
     fontFamily: 'var(--md-font)',
-    lineHeight: '1.7',
+    lineHeight: '1.65',
   },
+  // Column matches the app's smart views: 720px wide, text starting at the same edge as view titles.
   '.cm-content': {
-    maxWidth: '808px',
+    maxWidth: '820px',
     width: '100%',
     margin: '0 auto',
-    padding: '32px 24px 40vh',
+    padding: '12px 60px 40vh',
     caretColor: 'var(--md-accent)',
   },
   '.cm-line': { padding: '0' },
@@ -53,31 +54,39 @@ const editorTheme = EditorView.theme({
   '&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection':
     { backgroundColor: 'var(--md-selection)' },
   '.cm-tooltip': {
-    border: '1px solid var(--md-border)',
+    border: 'none',
     backgroundColor: 'var(--md-popover-bg)',
+    backdropFilter: 'blur(24px) saturate(180%)',
+    WebkitBackdropFilter: 'blur(24px) saturate(180%)',
     color: 'var(--md-fg)',
-    borderRadius: '8px',
-    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.18)',
+    borderRadius: '12px',
+    boxShadow: 'var(--md-popover-shadow)',
     overflow: 'hidden',
   },
   '.cm-tooltip.cm-tooltip-autocomplete > ul': {
     fontFamily: 'var(--md-font)',
+    fontSize: '13px',
     maxHeight: '18em',
     minWidth: '240px',
-    padding: '4px',
+    padding: '5px',
   },
   '.cm-tooltip.cm-tooltip-autocomplete > ul > li': {
-    padding: '4px 10px',
-    borderRadius: '5px',
-    lineHeight: '1.5',
+    display: 'flex',
+    alignItems: 'center',
+    minHeight: '26px',
+    padding: '0 10px',
+    borderRadius: '6px',
+    lineHeight: '1.4',
   },
   '.cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected]': {
     backgroundColor: 'var(--md-accent)',
-    color: '#fff',
+    color: 'var(--md-on-accent)',
   },
   '.cm-completionDetail': {
-    marginLeft: '12px',
+    marginLeft: 'auto',
+    paddingLeft: '16px',
     fontStyle: 'normal',
+    fontSize: '12px',
     opacity: '0.7',
   },
 });

@@ -2,8 +2,9 @@ import { ensureSyntaxTree, syntaxTree } from '@codemirror/language';
 import { EditorState, Range, StateEffect, StateField, type Extension } from '@codemirror/state';
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from '@codemirror/view';
 import type { SyntaxNode, Tree } from '@lezer/common';
-import { fieldTokens, parseTaskLine, tagRanges, todayISO } from '../core';
+import { fieldTokens, isOpenTask, parseRecurrence, parseTaskLine, tagRanges, todayISO } from '../core';
 import { badgeText, normalizeHref } from './format';
+import { frontMatterEndLine } from './helpers';
 import { TableWidget } from './table';
 import {
   BadgeWidget,
@@ -28,6 +29,11 @@ const focusField = StateField.define<boolean>({
   },
 });
 
+/** Call after setState so the cursor-line markdown stays raw when the editor was focused. */
+export function refocusIfFocused(view: EditorView): void {
+  if (view.hasFocus) view.dispatch({ effects: setFocus.of(true) });
+}
+
 interface Span {
   from: number;
   to: number;
@@ -51,6 +57,14 @@ function previewInputsChanged(startState: EditorState, state: EditorState): bool
     syntaxTree(startState) !== syntaxTree(state) ||
     startState.field(focusField) !== state.field(focusField)
   );
+}
+
+function spansEqual(a: Span[], b: Span[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].from !== b[i].from || a[i].to !== b[i].to) return false;
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -95,6 +109,9 @@ function buildInline(view: EditorView, cfg: PreviewConfig): DecorationSet {
   };
   const sameLine = (a: number, b: number) => doc.lineAt(a).number === doc.lineAt(b).number;
   const followingSpace = (pos: number) => (doc.sliceString(pos, pos + 1) === ' ' ? 1 : 0);
+
+  const fmEndLine = frontMatterEndLine(doc);
+  const isFrontMatter = (lineNo: number) => fmEndLine > 0 && lineNo >= 1 && lineNo <= fmEndLine;
 
   const lineDecos: Range<Decoration>[] = [];
   const treeDecos: Range<Decoration>[] = [];
@@ -168,12 +185,16 @@ function buildInline(view: EditorView, cfg: PreviewConfig): DecorationSet {
           case 'ATXHeading3':
           case 'ATXHeading4':
           case 'ATXHeading5':
-          case 'ATXHeading6':
+          case 'ATXHeading6': {
+            const lineNo = doc.lineAt(ref.from).number;
+            if (isFrontMatter(lineNo)) return false;
             lineDecos.push(lineDeco(`cm-md-h${name.slice(-1)}`).range(doc.lineAt(ref.from).from));
             return;
+          }
           case 'SetextHeading1':
           case 'SetextHeading2': {
             const markLine = doc.lineAt(ref.to).number;
+            if (isFrontMatter(doc.lineAt(ref.from).number)) return false;
             eachLine(ref.from, ref.to, (n) => {
               const cls = n === markLine ? 'cm-md-setext-mark' : `cm-md-h${name.slice(-1)}`;
               lineDecos.push(lineDeco(cls).range(doc.line(n).from));
@@ -236,9 +257,12 @@ function buildInline(view: EditorView, cfg: PreviewConfig): DecorationSet {
             treeDecos.push(linkMark(ref.from, ref.to, lineIsRaw(ref.from) ? null : doc.sliceString(ref.from, ref.to)));
             return;
           }
-          case 'HorizontalRule':
-            if (!lineIsRaw(ref.from) && sameLine(ref.from, ref.to)) treeDecos.push(hrWidget.range(ref.from, ref.to));
+          case 'HorizontalRule': {
+            const hrLine = doc.lineAt(ref.from).number;
+            if (!lineIsRaw(ref.from) && sameLine(ref.from, ref.to) && !isFrontMatter(hrLine))
+              treeDecos.push(hrWidget.range(ref.from, ref.to));
             return false;
+          }
           case 'ListMark':
             addListMark(ref.node);
             return;
@@ -263,6 +287,10 @@ function buildInline(view: EditorView, cfg: PreviewConfig): DecorationSet {
     const textTo = marks[1].from;
     if (textTo <= textFrom) return;
     const url = node.getChild('URL');
+    // Shortcut reference link: `[text][label]`. A bare `[text]` with no URL and
+    // no LinkLabel is unresolved plain text — leave it as-is to avoid hidden brackets.
+    const hasLabel = node.getChild('LinkLabel') !== null;
+    if (!url && !hasLabel) return;
     const raw = intersects(spans, doc.lineAt(node.from).from, doc.lineAt(node.to).to);
     if (raw) {
       treeDecos.push(markLink.range(textFrom, textTo));
@@ -301,13 +329,28 @@ function buildInline(view: EditorView, cfg: PreviewConfig): DecorationSet {
     if (!item || item.name !== 'ListItem') return;
     const line = doc.lineAt(mark.from);
     const raw = intersects(spans, line.from, line.to);
-    const marker = item.getChild('Task')?.getChild('TaskMarker');
-    if (marker && doc.lineAt(marker.from).number === line.number) {
+    // Drive checkbox from core parseTaskLine so [-]/[/] etc. match what toggleTask sees.
+    const task = parseTaskLine(line.text);
+    if (task) {
       lineDecos.push(lineDeco('cm-md-task').range(line.from));
       if (raw) return;
-      const checked = /[xX]/.test(doc.sliceString(marker.from, marker.to));
-      const end = marker.to + followingSpace(marker.to);
-      treeDecos.push(Decoration.replace({ widget: new CheckboxWidget(checked, cfg) }).range(mark.from, end));
+      // Quoted tasks must not show a clickable checkbox: core's offset-based patching
+      // doesn't account for the blockquote '>' prefix on each line.
+      let inQuote = false;
+      for (let p = item.parent; p; p = p.parent) {
+        if (p.name === 'Blockquote') { inQuote = true; break; }
+      }
+      if (!inQuote) {
+        const ltext = line.text;
+        const markOff = mark.from - line.from;
+        const bracketClose = ltext.indexOf(']', markOff);
+        const widgetEnd = bracketClose < 0
+          ? mark.to + followingSpace(mark.to)
+          : line.from + bracketClose + 1 + followingSpace(line.from + bracketClose + 1);
+        treeDecos.push(
+          Decoration.replace({ widget: new CheckboxWidget(task.checked, task.cancelled, task.fields.priority, cfg) }).range(mark.from, widgetEnd),
+        );
+      }
       return;
     }
     if (item.parent?.name !== 'BulletList') {
@@ -329,12 +372,19 @@ function buildInline(view: EditorView, cfg: PreviewConfig): DecorationSet {
     const indent = /^[ \t]*/.exec(text)![0].length;
     if (indent > 0 && indent < text.length) lineLevel.push(markIndent.range(line.from, line.from + indent));
 
+    // Front-matter lines: show as muted source block, not as headings/hr.
+    if (isFrontMatter(n)) {
+      lineDecos.push(lineDeco('cm-md-frontmatter').range(line.from));
+      return;
+    }
+
     const raw = intersects(spans, line.from, line.to);
     const lineBadges: Span[] = [];
     const task = parseTaskLine(text);
     if (task) {
-      if (task.checked) lineDecos.push(lineDeco('cm-md-task-done').range(line.from));
+      if (task.checked || task.cancelled) lineDecos.push(lineDeco('cm-md-task-done').range(line.from));
       const today = todayISO(cfg.now());
+      const open = isOpenTask(task);
       for (const tok of fieldTokens(text)) {
         const from = line.from + tok.from;
         const to = line.from + tok.to;
@@ -343,14 +393,19 @@ function buildInline(view: EditorView, cfg: PreviewConfig): DecorationSet {
           continue;
         }
         const value = task.fields[tok.kind] ?? tok.value;
-        let state = '';
-        if (!task.checked && tok.kind === 'due') {
-          if (value < today) state = 'is-overdue';
-          else if (value === today) state = 'is-today';
-        } else if (!task.checked && tok.kind === 'reminder' && value.slice(0, 10) === today) {
-          state = 'is-today';
+        let badgeState = '';
+        if (open && tok.kind === 'due') {
+          if (value < today) badgeState = 'is-overdue';
+          else if (value === today) badgeState = 'is-today';
+        } else if (open && tok.kind === 'reminder' && value.slice(0, 10) === today) {
+          badgeState = 'is-today';
+        } else if (tok.kind === 'recurrence' && parseRecurrence(value) === null) {
+          badgeState = 'is-invalid';
+        } else if (tok.kind === 'priority') {
+          // Class hook only: the flag icon takes the priority colour.
+          badgeState = `is-p-${value}`;
         }
-        const widget = new BadgeWidget(tok.kind, badgeText(tok.kind, value, today), state, cfg);
+        const widget = new BadgeWidget(tok.kind, badgeText(tok.kind, value, today), badgeState, cfg);
         lineLevel.push(Decoration.replace({ widget }).range(from, to));
         lineBadges.push({ from, to });
       }
@@ -395,12 +450,12 @@ function inlinePreview(cfg: PreviewConfig): Extension {
         this.decorations = buildInline(view, cfg);
       }
       update(update: ViewUpdate) {
-        if (
-          update.docChanged ||
-          update.selectionSet ||
-          update.viewportChanged ||
-          previewInputsChanged(update.startState, update.state)
-        ) {
+        if (update.docChanged || update.viewportChanged || previewInputsChanged(update.startState, update.state)) {
+          this.decorations = buildInline(update.view, cfg);
+          return;
+        }
+        // Selection-only change: rebuild only if the set of raw (cursor) lines changed.
+        if (update.selectionSet && !spansEqual(rawSpans(update.startState), rawSpans(update.state))) {
           this.decorations = buildInline(update.view, cfg);
         }
       }
@@ -475,7 +530,10 @@ function tablePreview(cfg: PreviewConfig): Extension {
   return StateField.define<DecorationSet>({
     create: (state) => buildTables(state, cfg),
     update(value, tr) {
-      if (tr.docChanged || tr.selection || previewInputsChanged(tr.startState, tr.state)) {
+      if (tr.docChanged || previewInputsChanged(tr.startState, tr.state)) {
+        return buildTables(tr.state, cfg);
+      }
+      if (tr.selection && !spansEqual(rawSpans(tr.startState), rawSpans(tr.state))) {
         return buildTables(tr.state, cfg);
       }
       return value;

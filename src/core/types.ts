@@ -13,14 +13,28 @@ export interface TaskFields {
 
 export type FieldKind = keyof TaskFields;
 
+/** Obsidian Tasks fields this app doesn't edit; kept verbatim on rewrite. */
+export type ExtraKind = 'id' | 'dependsOn' | 'onCompletion' | 'cancelledDate';
+
+export interface ExtraField {
+  kind: ExtraKind;
+  /** Token text exactly as written (emoji + value). */
+  raw: string;
+}
+
 export interface ParsedTask {
   indent: string; // leading whitespace verbatim
   bullet: string; // '-', '*', '+', or '1.' style
   status: string; // char inside [ ]
   checked: boolean; // status is 'x' or 'X'
+  cancelled: boolean; // status is '-'
   description: string; // text without trailing field tokens (tags kept)
   tags: string[]; // without '#', from description
   fields: TaskFields;
+  /** 🆔 ⛔ 🏁 ❌ tokens from the trailing field region, in line order. */
+  extras?: ExtraField[];
+  /** Obsidian block id (without '^') that ended the line; always re-emitted last. */
+  blockId?: string;
 }
 
 /** Char offsets within the raw line, covering emoji+value. */

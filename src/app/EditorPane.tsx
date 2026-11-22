@@ -1,6 +1,5 @@
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEffect, useRef } from "react";
-import { saveAttachment } from "../backend";
+import { fileUrl, saveAttachment } from "../backend";
 import type { FieldKind } from "../core";
 import { createEditor, type EditorHandle } from "../editor";
 import { closeSession, noteEdited, openSession } from "./session";
@@ -10,10 +9,11 @@ import { toast } from "./toast";
 
 interface Props {
   path: string;
+  /** LF-only document; the session restores the file's line endings on save. */
   content: string;
   /** New object identity = scroll request (so re-jumping to the same line works). */
   jump: { line: number } | null;
-  onBadge(line: number, kind: FieldKind, rect: DOMRect): void;
+  onBadge(line: number, lineText: string, kind: FieldKind, rect: DOMRect): void;
   onToggle(line: number): void;
   onOpenLink(href: string): void;
 }
@@ -28,10 +28,10 @@ export function EditorPane({ path, content, jump, onBadge, onToggle, onOpenLink 
     const handle = createEditor({
       parent: host.current!,
       doc: content,
-      resolveImage: (src) => (/^(https?:|data:)/.test(src) ? src : convertFileSrc(resolveRelative(path, src))),
+      resolveImage: (src) => (/^(https?:|data:)/.test(src) ? src : fileUrl(resolveRelative(path, src))),
       onChange: (doc) => noteEdited(path, doc),
       onToggleRequest: (l) => cb.current.onToggle(l),
-      onBadgeClick: (l, kind, rect) => cb.current.onBadge(l, kind, rect),
+      onBadgeClick: (l, lineText, kind, rect) => cb.current.onBadge(l, lineText, kind, rect),
       onOpenLink: (href) => cb.current.onOpenLink(href),
       onPasteImage: async (bytes, ext) => {
         try {
@@ -51,7 +51,7 @@ export function EditorPane({ path, content, jump, onBadge, onToggle, onOpenLink 
       handleRef.current = null;
       void closeSession(handle).catch(() => undefined).finally(() => handle.destroy());
     };
-    // Editor instance is per file; content is only the initial document.
+    // Editor instance is per mount (the parent keys it by path and session epoch); content is only the initial document.
   }, [path]);
 
   useEffect(() => {

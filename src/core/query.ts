@@ -1,6 +1,6 @@
 import { addDays, localDateTime } from './dates';
-import { doneSections, applyEdits, indentWidth, splitLines } from './doc';
-import { parseTaskLine, tagRanges } from './task';
+import { doneSections, applyEdits, fencedLines, indentWidth, splitLines } from './doc';
+import { isOpenTask, parseTaskLine, tagRanges } from './task';
 import type { ParsedTask, Priority } from './types';
 
 export interface IndexedTask {
@@ -30,13 +30,14 @@ export function listNameOf(path: string): string {
 export function indexFile(path: string, content: string): IndexedTask[] {
   const lines = splitLines(content).map((l) => l.text);
   const sections = doneSections(lines);
+  const fenced = fencedLines(content);
   const listName = listNameOf(path);
   const out: IndexedTask[] = [];
   // Indent widths of the enclosing task lines.
   const stack: number[] = [];
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i];
-    if (raw.trim() === '') continue;
+    if (raw.trim() === '' || fenced.has(i)) continue;
     const width = indentWidth(raw);
     while (stack.length > 0 && stack[stack.length - 1] >= width) stack.pop();
     const task = parseTaskLine(raw);
@@ -86,18 +87,24 @@ export function sortTasks(ts: IndexedTask[]): IndexedTask[] {
   });
 }
 
-/** Unchecked tasks due today or earlier, or with a reminder today. */
+/**
+ * Open tasks due today or earlier, with a reminder today, or (without a due date) with
+ * a reminder on an earlier day.
+ */
 export function todayTasks(all: IndexedTask[], today: string): IndexedTask[] {
   return sortTasks(
     all.filter(({ task }) => {
-      if (task.checked) return false;
-      const { due, reminder } = task.fields;
-      return (due !== undefined && due <= today) || reminder?.slice(0, 10) === today;
+      if (!isOpenTask(task)) return false;
+      const { due } = task.fields;
+      const reminderDate = task.fields.reminder?.slice(0, 10);
+      if (due !== undefined && due <= today) return true;
+      if (reminderDate === undefined) return false;
+      return reminderDate === today || (due === undefined && reminderDate < today);
     }),
   );
 }
 
-/** Unchecked tasks due in (today, today+days], grouped by due date ascending. */
+/** Open tasks due in (today, today+days], grouped by due date ascending. */
 export function upcomingTasks(
   all: IndexedTask[],
   today: string,
@@ -107,7 +114,7 @@ export function upcomingTasks(
   const groups = new Map<string, IndexedTask[]>();
   for (const t of all) {
     const due = t.task.fields.due;
-    if (t.task.checked || due === undefined || due <= today || due > last) continue;
+    if (!isOpenTask(t.task) || due === undefined || due <= today || due > last) continue;
     const group = groups.get(due);
     if (group) group.push(t);
     else groups.set(due, [t]);
@@ -115,10 +122,11 @@ export function upcomingTasks(
   return [...groups.keys()].sort().map((date) => ({ date, tasks: sortTasks(groups.get(date) ?? []) }));
 }
 
-/** Tags across all tasks (case-insensitive grouping, first spelling kept), sorted by tag. */
+/** Tags across open tasks (case-insensitive grouping, first spelling kept), sorted by tag. */
 export function allTags(all: IndexedTask[]): { tag: string; count: number }[] {
   const byKey = new Map<string, { tag: string; count: number }>();
   for (const t of all) {
+    if (!isOpenTask(t.task)) continue;
     const keys = new Set(t.task.tags.map((tag) => tag.toLowerCase()));
     for (const tag of t.task.tags) {
       const key = tag.toLowerCase();
@@ -131,13 +139,13 @@ export function allTags(all: IndexedTask[]): { tag: string; count: number }[] {
   return [...byKey.values()].sort((a, b) => a.tag.localeCompare(b.tag));
 }
 
-/** Unchecked tasks carrying `tag` or a nested child of it ('a' matches 'a/b'); case-insensitive. */
+/** Open tasks carrying `tag` or a nested child of it ('a' matches 'a/b'); case-insensitive. */
 export function tagTasks(all: IndexedTask[], tag: string): IndexedTask[] {
   const want = tag.replace(/^#/, '').toLowerCase();
   return sortTasks(
     all.filter(
       (t) =>
-        !t.task.checked &&
+        isOpenTask(t.task) &&
         t.task.tags.some((x) => {
           const lower = x.toLowerCase();
           return lower === want || lower.startsWith(`${want}/`);
@@ -172,12 +180,12 @@ export function fnv1a(s: string): string {
   return (h >>> 0).toString(16).padStart(8, '0');
 }
 
-/** Unchecked tasks whose reminder is after `now`, soonest first (date-only reminders fire at 09:00). */
+/** Open tasks whose reminder is after `now`, soonest first (date-only reminders fire at 09:00). */
 export function pendingReminders(all: IndexedTask[], now: Date, limit = Infinity): Reminder[] {
   const out: { time: number; reminder: Reminder }[] = [];
   for (const t of all) {
     const reminder = t.task.fields.reminder;
-    if (t.task.checked || !reminder) continue;
+    if (!isOpenTask(t.task) || !reminder) continue;
     const m = /^(\d{4}-\d{2}-\d{2})(?:\s+(\d{1,2}):(\d{2}))?$/.exec(reminder);
     if (!m) continue;
     const at = `${m[1]} ${m[2] ? m[2].padStart(2, '0') : '09'}:${m[3] ?? '00'}`;

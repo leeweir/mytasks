@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { toggleTask, archiveTask, setTaskFields, applyEdits, lineOffset } from './doc';
+import { toggleTask, archiveTask, setTaskFields, applyEdits, lineOffset, fencedLines, RecurrenceError } from './doc';
 import type { TextEdit } from './types';
 
 describe('lineOffset', () => {
@@ -226,5 +226,157 @@ describe('setTaskFields', () => {
     const text = '- [ ] Task 📅 2026-10-05';
     const edits = setTaskFields(text, 0, { due: '2026-10-05' });
     expect(edits).toEqual([]);
+  });
+});
+
+describe('recurrence: dates keep their offsets from the reference date', () => {
+  const NOV22 = new Date(2026, 10, 22);
+  const nextLine = (text: string, now = NOV22) => applyEdits(text, toggleTask(text, 0, now).edits).split('\n')[0];
+
+  test('when done: reminder moves with the due date', () => {
+    expect(nextLine('- [ ] T 🔁 every 3 days when done ⏰ 2026-11-10 09:00 📅 2026-11-10')).toBe(
+      '- [ ] T 🔁 every 3 days when done ⏰ 2026-11-25 09:00 📅 2026-11-25',
+    );
+  });
+
+  test('when done: reminder-only task restarts from today, time kept', () => {
+    expect(nextLine('- [ ] T 🔁 every day when done ⏰ 2026-11-01 07:30')).toBe(
+      '- [ ] T 🔁 every day when done ⏰ 2026-11-23 07:30',
+    );
+  });
+
+  test('scheduled-only task gets no invented due date', () => {
+    expect(nextLine('- [ ] T 🔁 every week ⏳ 2026-10-01')).toBe('- [ ] T 🔁 every week ⏳ 2026-10-08');
+  });
+
+  test('start-only task shifts its start date', () => {
+    expect(nextLine('- [ ] T 🔁 every month 🛫 2026-10-15')).toBe('- [ ] T 🔁 every month 🛫 2026-11-15');
+  });
+
+  test('when done: every date keeps its offset from due', () => {
+    expect(nextLine('- [ ] T 🔁 every week when done ⏰ 2026-11-09 18:00 🛫 2026-11-08 ⏳ 2026-11-09 📅 2026-11-10')).toBe(
+      '- [ ] T 🔁 every week when done ⏰ 2026-11-28 18:00 🛫 2026-11-27 ⏳ 2026-11-28 📅 2026-11-29',
+    );
+  });
+
+  test('reminder is the reference when there is no due date', () => {
+    expect(nextLine('- [ ] T 🔁 every week ⏰ 2026-11-20 08:00 ⏳ 2026-11-19')).toBe(
+      '- [ ] T 🔁 every week ⏰ 2026-11-27 08:00 ⏳ 2026-11-26',
+    );
+  });
+});
+
+describe('unparseable recurrence', () => {
+  test('completing throws RecurrenceError and produces no edits', () => {
+    const text = '- [ ] Rent 🔁 every month on the last Friday 📅 2026-11-27';
+    expect(() => toggleTask(text, 0, new Date(2026, 10, 22))).toThrow(RecurrenceError);
+    expect(() => toggleTask(text, 0, new Date(2026, 10, 22))).toThrow('无法识别的重复规则：every month on the last Friday');
+  });
+
+  test('unchecking a completed task with such a rule still works', () => {
+    const text = '- [x] Rent 🔁 every month on the last Friday ✅ 2026-11-22';
+    expect(applyEdits(text, toggleTask(text, 0, new Date(2026, 10, 22)).edits)).toBe(
+      '- [ ] Rent 🔁 every month on the last Friday',
+    );
+  });
+});
+
+describe('fenced code', () => {
+  test('fencedLines covers fence lines and content; closing fence needs only whitespace', () => {
+    const text = 'a\n```js\n- [ ] x\n```js\n## Done\n```  \nb\n~~~~\n~~~\n';
+    expect([...fencedLines(text)]).toEqual([1, 2, 3, 4, 5, 7, 8, 9]);
+  });
+
+  test('closing fence must match char and be at least as long', () => {
+    expect([...fencedLines('````\n```\n~~~~\n````\nafter')]).toEqual([0, 1, 2, 3]);
+  });
+
+  test('a backtick fence info string cannot contain backticks', () => {
+    expect([...fencedLines('``` a`b\n- [ ] t')]).toEqual([]);
+  });
+
+  test('CRLF text', () => {
+    expect([...fencedLines('a\r\n```\r\nb\r\n```\r\nc')]).toEqual([1, 2, 3]);
+  });
+
+  test('Done heading inside a fence with an info-string "closing" line is ignored', () => {
+    const text = '- [x] A\n```md\n```js\n## Done\n- [x] sample\n```\n';
+    const result = applyEdits(text, archiveTask(text, { line: 0, raw: '- [x] A' }));
+    expect(result).toBe('```md\n```js\n## Done\n- [x] sample\n```\n\n## Done\n- [x] A\n');
+  });
+
+  test('completing a parent does not check task lines in a nested code block', () => {
+    const text = '- [ ] Parent\n  ```\n  - [ ] sample\n  ```\n  - [ ] Child';
+    expect(applyEdits(text, toggleTask(text, 0, new Date(2026, 9, 3)).edits)).toBe(
+      '- [x] Parent ✅ 2026-10-03\n  ```\n  - [ ] sample\n  ```\n  - [x] Child ✅ 2026-10-03',
+    );
+  });
+});
+
+describe('cancelled tasks', () => {
+  test('toggling a cancelled task reopens it without spawning a recurrence', () => {
+    const text = '- [-] T 🔁 every day 📅 2026-10-01 ❌ 2026-10-02';
+    const r = toggleTask(text, 0, new Date(2026, 9, 3));
+    expect(r.checkedNow).toBe(false);
+    expect(applyEdits(text, r.edits)).toBe('- [ ] T 🔁 every day 📅 2026-10-01');
+  });
+
+  test('completing a parent leaves cancelled children alone', () => {
+    const text = '- [ ] P\n  - [-] C';
+    expect(applyEdits(text, toggleTask(text, 0, new Date(2026, 9, 3)).edits)).toBe('- [x] P ✅ 2026-10-03\n  - [-] C');
+  });
+});
+
+describe('block ids and kept Obsidian fields', () => {
+  const NOW = new Date(2026, 9, 3);
+
+  test('completion keeps ^id at the end of the line', () => {
+    const text = '- [ ] Task 📅 2026-10-05 ^abc123';
+    expect(applyEdits(text, toggleTask(text, 0, NOW).edits)).toBe('- [x] Task 📅 2026-10-05 ✅ 2026-10-03 ^abc123');
+  });
+
+  test('recurrence: id and block id stay on the completed line', () => {
+    const text = '- [ ] T 🔁 every day 🏁 delete 📅 2026-10-03 🆔 t1 ^blk';
+    expect(applyEdits(text, toggleTask(text, 0, NOW).edits)).toBe(
+      '- [ ] T 🔁 every day 📅 2026-10-04 🏁 delete\n- [x] T 🔁 every day 📅 2026-10-03 ✅ 2026-10-03 🏁 delete 🆔 t1 ^blk',
+    );
+  });
+
+  test('setTaskFields keeps ⛔ and ^id', () => {
+    const text = '- [ ] T ⛔ a1,b2 ^x';
+    expect(applyEdits(text, setTaskFields(text, 0, { due: '2026-10-05' }))).toBe('- [ ] T 📅 2026-10-05 ⛔ a1,b2 ^x');
+  });
+});
+
+describe('setTaskFields: clearing a duplicated field', () => {
+  test('removes the older duplicate left in the description', () => {
+    const text = '- [ ] t 📅 2026-10-01 📅 2026-10-05';
+    expect(applyEdits(text, setTaskFields(text, 0, { due: null }))).toBe('- [ ] t');
+  });
+
+  test('unchecking removes duplicated done dates', () => {
+    const text = '- [x] t ✅ 2026-10-01 ✅ 2026-10-02';
+    expect(applyEdits(text, toggleTask(text, 0, new Date(2026, 9, 3)).edits)).toBe('- [ ] t');
+  });
+});
+
+describe('CRLF input: edits are offsets into the given text', () => {
+  test('toggleTask on a middle line', () => {
+    const text = '# L\r\n- [ ] A\r\n- [ ] B\r\n- [ ] C\r\n';
+    expect(applyEdits(text, toggleTask(text, 2, new Date(2026, 10, 22)).edits)).toBe(
+      '# L\r\n- [ ] A\r\n- [x] B ✅ 2026-11-22\r\n- [ ] C\r\n',
+    );
+  });
+
+  test('toggleTask recurrence inserts a CRLF line', () => {
+    const text = 'x\r\n- [ ] R 🔁 every day 📅 2026-11-22\r\n';
+    expect(applyEdits(text, toggleTask(text, 1, new Date(2026, 10, 22)).edits)).toBe(
+      'x\r\n- [ ] R 🔁 every day 📅 2026-11-23\r\n- [x] R 🔁 every day 📅 2026-11-22 ✅ 2026-11-22\r\n',
+    );
+  });
+
+  test('setTaskFields on the last line', () => {
+    const text = '- [ ] A\r\n- [ ] B 📅 2026-10-05\r\n';
+    expect(applyEdits(text, setTaskFields(text, 1, { due: '2026-10-06' }))).toBe('- [ ] A\r\n- [ ] B 📅 2026-10-06\r\n');
   });
 });
