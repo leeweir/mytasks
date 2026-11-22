@@ -1,0 +1,224 @@
+/* Tasks editor: live-preview markdown styling. Colours follow the system appearance. */
+
+.cm-editor.tasks-editor {
+  --md-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+  --md-font-mono: "SF Mono", ui-monospace, Menlo, Monaco, monospace;
+  --md-bg: #ffffff;
+  --md-fg: #1f2328;
+  --md-dim: #8a8f98;
+  --md-heading: #111418;
+  --md-mark: #a0a6ae;
+  --md-accent: #2f6fed;
+  --md-accent-soft: rgba(47, 111, 237, 0.12);
+  --md-overdue: #d93025;
+  --md-overdue-soft: rgba(217, 48, 37, 0.12);
+  --md-link: #2f6fed;
+  --md-quote: #5c6370;
+  --md-quote-bar: #d0d4da;
+  --md-border: #e3e6ea;
+  --md-selection: rgba(47, 111, 237, 0.2);
+  --md-code-bg: #f5f6f8;
+  --md-inline-code-bg: rgba(135, 145, 160, 0.16);
+  --md-badge-bg: #eef0f3;
+  --md-badge-fg: #4a5058;
+  --md-tag-bg: rgba(124, 92, 230, 0.12);
+  --md-tag-fg: #6a48d7;
+  --md-popover-bg: #ffffff;
+  --code-keyword: #a626a4;
+  --code-string: #50a14f;
+  --code-comment: #a0a1a7;
+  --code-number: #b76b01;
+  --code-type: #c18401;
+  --code-function: #4078f2;
+  --code-property: #e45649;
+  --code-tag: #e45649;
+  --code-meta: #0184bc;
+}
+
+@media (prefers-color-scheme: dark) {
+  .cm-editor.tasks-editor {
+    --md-bg: #1e1f22;
+    --md-fg: #dcdfe4;
+    --md-dim: #7d828b;
+    --md-heading: #f1f3f5;
+    --md-mark: #6b717a;
+    --md-accent: #5b9bff;
+    --md-accent-soft: rgba(91, 155, 255, 0.18);
+    --md-overdue: #ff6b5e;
+    --md-overdue-soft: rgba(255, 107, 94, 0.18);
+    --md-link: #6aa7ff;
+    --md-quote: #a3a9b2;
+    --md-quote-bar: #4a4f57;
+    --md-border: #3a3d42;
+    --md-selection: rgba(91, 155, 255, 0.3);
+    --md-code-bg: #26282c;
+    --md-inline-code-bg: rgba(160, 170, 185, 0.18);
+    --md-badge-bg: #2d3035;
+    --md-badge-fg: #c3c8cf;
+    --md-tag-bg: rgba(158, 132, 255, 0.18);
+    --md-tag-fg: #b7a3ff;
+    --md-popover-bg: #2a2c30;
+    --code-keyword: #c678dd;
+    --code-string: #98c379;
+    --code-comment: #7f848e;
+    --code-number: #d19a66;
+    --code-type: #e5c07b;
+    --code-function: #61afef;
+    --code-property: #e06c75;
+    --code-tag: #e06c75;
+    --code-meta: #56b6c2;
+  }
+}
+
+.tasks-editor .cm-content {
+  tab-size: 4;
+}
+
+/* Headings */
+.tasks-editor .cm-line.cm-md-h1 { font-size: 1.75em; line-height: 1.35; padding-top: 0.5em; }
+.tasks-editor .cm-line.cm-md-h2 { font-size: 1.45em; line-height: 1.4; padding-top: 0.4em; }
+.tasks-editor .cm-line.cm-md-h3 { font-size: 1.25em; line-height: 1.45; padding-top: 0.3em; }
+.tasks-editor .cm-line.cm-md-h4 { font-size: 1.1em; }
+.tasks-editor .cm-line.cm-md-h5 { font-size: 1em; }
+.tasks-editor .cm-line.cm-md-h6 { font-size: 0.95em; color: var(--md-dim); }
+.tasks-editor .cm-line.cm-md-setext-mark { color: var(--md-mark); }
+
+/* Inline */
+.tasks-editor .cm-md-strong { font-weight: 700; }
+.tasks-editor .cm-md-em { font-style: italic; }
+.tasks-editor .cm-md-strike { text-decoration: line-through; color: var(--md-dim); }
+.tasks-editor .cm-md-inline-code {
+  font-family: var(--md-font-mono);
+  font-size: 0.88em;
+  background: var(--md-inline-code-bg);
+  border-radius: 4px;
+  padding: 0.1em 0.3em;
+}
+.tasks-editor .cm-md-link {
+  color: var(--md-link);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--md-link) 40%, transparent);
+  text-underline-offset: 2px;
+}
+.tasks-editor .cm-md-link[data-href] { cursor: pointer; }
+.tasks-editor .cm-md-tag {
+  color: var(--md-tag-fg);
+  background: var(--md-tag-bg);
+  border-radius: 999px;
+  padding: 0.05em 0.45em;
+  font-size: 0.9em;
+}
+.tasks-editor .cm-md-indent { font-family: var(--md-font-mono); }
+.tasks-editor .cm-md-ol-mark { color: var(--md-dim); }
+.tasks-editor .cm-md-field-raw { color: var(--md-dim); }
+
+/* Blockquote */
+.tasks-editor .cm-line.cm-md-quote {
+  border-left: 3px solid var(--md-quote-bar);
+  padding-left: 14px;
+  color: var(--md-quote);
+}
+
+/* Lists & tasks */
+.tasks-editor .cm-md-bullet {
+  display: inline-block;
+  min-width: 1em;
+  color: var(--md-dim);
+  text-align: center;
+}
+.tasks-editor .cm-md-checkbox {
+  width: 1.05em;
+  height: 1.05em;
+  margin: 0 0.45em 0 0.05em;
+  vertical-align: -0.15em;
+  accent-color: var(--md-accent);
+  cursor: pointer;
+}
+.tasks-editor .cm-line.cm-md-task-done {
+  color: var(--md-dim);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--md-dim) 70%, transparent);
+}
+
+/* Field badges */
+.tasks-editor .cm-md-badge {
+  display: inline-block;
+  margin: 0 0.15em;
+  padding: 0 0.55em;
+  border-radius: 999px;
+  background: var(--md-badge-bg);
+  color: var(--md-badge-fg);
+  font-size: 0.78em;
+  line-height: 1.65;
+  white-space: nowrap;
+  vertical-align: 0.08em;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.tasks-editor .cm-md-badge:hover { filter: brightness(0.95); }
+.tasks-editor .cm-md-badge.is-today { background: var(--md-accent-soft); color: var(--md-accent); }
+.tasks-editor .cm-md-badge.is-overdue { background: var(--md-overdue-soft); color: var(--md-overdue); }
+.tasks-editor .cm-md-task-done .cm-md-badge { opacity: 0.65; }
+
+/* Horizontal rule */
+.tasks-editor .cm-md-hr {
+  display: inline-block;
+  width: 100%;
+  vertical-align: middle;
+  border-top: 1px solid var(--md-border);
+}
+
+/* Images */
+.tasks-editor .cm-md-image { display: inline-block; max-width: 100%; vertical-align: bottom; }
+.tasks-editor .cm-md-image img {
+  display: block;
+  max-width: 100%;
+  max-height: 400px;
+  margin: 4px 0;
+  border-radius: 6px;
+}
+.tasks-editor .cm-md-image.is-broken { color: var(--md-dim); font-size: 0.9em; }
+
+/* Code blocks */
+.tasks-editor .cm-line.cm-md-codeblock {
+  font-family: var(--md-font-mono);
+  font-size: 0.88em;
+  background: var(--md-code-bg);
+  padding: 0 14px;
+}
+.tasks-editor .cm-line.cm-md-codeblock-begin { border-radius: 6px 6px 0 0; padding-top: 4px; }
+.tasks-editor .cm-line.cm-md-codeblock-end { border-radius: 0 0 6px 6px; padding-bottom: 4px; }
+.tasks-editor .cm-line.cm-md-codeblock-begin.cm-md-codeblock-end { border-radius: 6px; }
+.tasks-editor .cm-line.cm-md-fence-hidden { font-size: 0.72em; line-height: 1.4; color: var(--md-dim); }
+.tasks-editor .cm-md-fence-label { font-family: var(--md-font); letter-spacing: 0.02em; }
+.tasks-editor .cm-line.cm-md-table-raw { font-family: var(--md-font-mono); font-size: 0.88em; }
+
+/* Rendered tables */
+.tasks-editor .cm-md-table {
+  overflow-x: auto;
+  padding: 6px 0;
+  cursor: text;
+}
+.tasks-editor .cm-md-table table {
+  border-collapse: collapse;
+  font-size: 0.94em;
+  line-height: 1.5;
+}
+.tasks-editor .cm-md-table th,
+.tasks-editor .cm-md-table td {
+  border: 1px solid var(--md-border);
+  padding: 5px 12px;
+  white-space: normal;
+  vertical-align: top;
+}
+.tasks-editor .cm-md-table th { background: var(--md-code-bg); font-weight: 600; text-align: left; }
+.tasks-editor .cm-md-table code {
+  font-family: var(--md-font-mono);
+  font-size: 0.9em;
+  background: var(--md-inline-code-bg);
+  border-radius: 4px;
+  padding: 0.1em 0.3em;
+}
+.tasks-editor .cm-md-table a { color: var(--md-link); cursor: pointer; }
+.tasks-editor .cm-md-table img { max-width: 100%; max-height: 200px; }
