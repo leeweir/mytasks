@@ -1,129 +1,148 @@
 # Tasks
 
-本地 Markdown 待办应用，支持 macOS 26。每个 `.md` 文件是一份清单；文件夹就是任务库，不使用私有数据库。
+English | [简体中文](README.zh-CN.md)
 
-实现采用 Tauri 2 / Rust、React / TypeScript 和 CodeMirror 6。窗口使用系统 WKWebView；文件监听、通知、菜单和 PDF 打印使用 macOS API。不是 SwiftUI / TextKit 工程，不需要完整版 Xcode。
+A local Markdown to-do app for macOS 26. Each `.md` file is a list, and a folder is a task vault. There is no private database.
 
-## 运行
+Built with Tauri 2 / Rust, React / TypeScript and CodeMirror 6. The window uses the system WKWebView. File watching, notifications, menus and PDF printing use macOS APIs. It is not a SwiftUI / TextKit project and does not need the full Xcode.
 
-开发需要 Node.js 22.12+、Rust stable 和 Xcode Command Line Tools。
+The app's interface is in Chinese only. UI labels below appear in parentheses.
+
+## Running
+
+You need Node.js 22.12+, stable Rust and the Xcode Command Line Tools for development.
 
 ```sh
 npm ci
 npm run tauri -- dev
 ```
 
-仅运行 `npm run dev` 会启动前端服务器，浏览器里没有文件系统和通知等原生能力。
+`npm run dev` starts only the frontend server. In a plain browser there is no file system access, notifications or other native features.
 
-构建本机架构的应用：
+To build the app for the host architecture:
 
 ```sh
 npm run tauri -- build --bundles app
 open src-tauri/target/release/bundle/macos/Tasks.app
 ```
 
-可将 `Tasks.app` 拖进 `/Applications`。当前用于个人本机运行，没有 Developer ID 签名、公证、自动更新或 App Sandbox。窗口使用系统侧栏毛玻璃材质和叠加式标题栏，需要启用 Tauri 的 `macos-private-api`，因此不适合上架 App Store。
+You can drag `Tasks.app` into `/Applications`. The app is for personal use on your own Mac: it has no Developer ID signing, notarization, auto-update or App Sandbox. The window uses the system sidebar vibrancy material and an overlay title bar. That requires Tauri's `macos-private-api`, so the app can't go on the App Store.
 
-## 使用
+## Usage
 
-1. 首次启动选择任务文件夹。应用递归读取其中的 `.md` 文件；隐藏目录和 `attachments/` 不参与任务索引。无法读取的子目录、非 UTF-8 编码的文件以及指向任务文件夹之外的链接会被跳过，并提示一次。
-2. 按 `⌘N` 新建清单，输入 Markdown。停止输入约一秒自动保存；退出前（`⌘Q`、Dock 退出、注销关机）也会保存待写入的内容。CRLF 换行的文件保持原换行写回。
-3. 侧栏提供今天、未来七天、已完成、标签和文件树。右键文件或目录可以重命名、移动到废纸篓；空白处可以新建文件夹。
-4. 在汇总列表中勾选任务，或点击字段徽章修改日期、提醒、优先级和重复规则；修改会写回源文件。
-5. 搜索框扫描全部清单正文，点击结果跳到对应行。
+1. On first launch, choose a task folder. The app reads the `.md` files in it recursively. Hidden directories and `attachments/` are left out of the task index. Subdirectories that can't be read, files that aren't UTF-8, and links pointing outside the task folder are skipped, and you get one notice about them.
+2. Press `⌘N` to create a list and type Markdown. Edits save automatically about one second after you stop typing. Pending edits are also saved before the app quits (`⌘Q`, Quit from the Dock, logout or shutdown). Files with CRLF line endings are written back with CRLF.
+3. The sidebar has Today (今天), Upcoming (即将到期, the next seven days), Done (已完成), Tags and the file tree. Right-click a file or folder to rename it or move it to the Trash. Right-click empty space to create a folder.
+4. In the aggregate views, you can check off tasks or click a field badge to change the due date, reminder, priority or recurrence. Changes are written back to the source file.
+5. The search box scans the text of every list. Click a result to jump to that line.
 
-“今天”包含今天到期、已过期，以及今天有提醒或提醒已过期（无截止日期）的未完成任务。任务先按截止日期、再按优先级排序。标签支持 `#工作`、`#工作/项目` 等层级形式。`- [-]` 表示已取消，不出现在今天、即将到期和提醒里；再次勾选会恢复为未完成。代码块里的 `- [ ]` 不算任务。
+Today shows open tasks that are due today or overdue. It also shows open tasks with no due date whose reminder is today or has passed. Tasks are sorted by due date, then by priority. Tags can be nested, as in `#work` and `#work/project`. `- [-]` marks a task as cancelled: cancelled tasks don't appear in Today, Upcoming or reminders, and checking one again makes it open. A `- [ ]` inside a code block is not a task.
 
-### Markdown 格式
+### Markdown format
 
-字段沿用 Obsidian Tasks 语法。提醒用 `⏰ YYYY-MM-DD HH:mm`，按本地时区解释。
+Fields use the Obsidian Tasks syntax. Reminders are written `⏰ YYYY-MM-DD HH:mm` in the local time zone.
 
 ```markdown
-# 工作
+# Work
 
-- [ ] 整理资料 #工作 ⏫ 📅 2026-10-05 ⏰ 2026-10-05 09:00
-- [ ] 周报 #工作 🔁 every week 📅 2026-10-09
-- [ ] 发布
-    - [ ] 检查文案
-    - [ ] 更新截图
+- [ ] Sort out the notes #work ⏫ 📅 2026-10-05 ⏰ 2026-10-05 09:00
+- [ ] Weekly report #work 🔁 every week 📅 2026-10-09
+- [ ] Release
+    - [ ] Check the copy
+    - [ ] Update screenshots
 
 ## Done
 
-- [x] 已处理 ✅ 2026-10-03
+- [x] Handled ✅ 2026-10-03
 ```
 
-完成父任务会一并勾选子任务。已完成的顶层任务约三秒后连同子任务移到文件底部 `## Done`；延迟期间可以取消勾选。重复任务在原位置生成下一次实例，所有日期（截止、提醒、计划、开始）按相同间隔平移，`when done` 规则从完成当天起算；旧实例正常归档。支持天、周、月、年、每 N 天、指定星期和月内日。无法识别的重复规则会拒绝完成并提示，徽章标为无效。行尾的 Obsidian 块引用 `^id` 和 🆔 ⛔ 🏁 ❌ 字段会原样保留。
+Completing a parent task also checks its subtasks. About three seconds after a top-level task is completed, it moves with its subtasks to a `## Done` section at the bottom of the file. You can uncheck it during that delay.
 
-汇总视图和字段弹窗按行号加行内容定位任务；如果文件在此期间变化导致该行内容不同，操作会取消并提示重试，不会改到别的任务。
+When you complete a recurring task, the next instance appears in its place. All of its dates (due, reminder, scheduled, start) move by the same interval, and `when done` rules count from the day of completion. The old instance is archived as usual. Supported rules are days, weeks, months, years, every N days, specific weekdays and a day of the month. A task with a recurrence rule the app can't parse can't be completed: the app shows a notice and marks the badge as invalid.
 
-### 编辑与补全
+Obsidian block references (`^id`) at the end of a line and the 🆔 ⛔ 🏁 ❌ fields are kept unchanged.
 
-- 光标所在行显示源码，其他行实时预览；表格在光标进入后显示源码。
-- 支持标题、粗斜体、行内代码、代码块、复选框、字段徽章、链接、图片、表格、引用和分割线。
-- 输入 `@` 触发中英文补全，例如 `@明天`、`@tomorrow`、`@提醒 明天9点`、`@每周一`、`@高`。用方向键选择，回车确认，Escape 取消。
-- 拖入或粘贴图片会复制到任务库的 `attachments/`，插入相对路径。不会移动原图片。点击本地文件链接用默认应用打开（仅限任务库内，可执行文件和 `.app` 等会被拒绝）；`#标题` 链接跳到对应标题。
-- 浅色 / 深色外观跟随系统。复选框的圆环颜色表示优先级（高红、中黄、低蓝灰）。
-- 搜索框支持中文输入法：拼音组合期间保留输入，选词确认后再更新结果；Escape 在组合期间交给输入法处理，非组合期间清空搜索。
+The aggregate views and the field popover find a task by its line number and the text of that line. If the file changed in the meantime and the line no longer matches, the action is cancelled and you're asked to retry, so a different task is never edited by mistake.
 
-### 外部修改与冲突
+### Editing and completion
 
-应用通过 FSEvents 监听任务库，只重读变化的文件；文件夹重命名、移动等无法逐个对应的事件会触发全量重读。编辑器没有未保存内容时自动载入外部修改；本地有改动时暂停自动保存，询问保留本地还是磁盘版本，不会自行合并。每次写入都会在 Rust 端比对磁盘内容，期间被外部改动时视为冲突而不是覆盖。
+- The line with the cursor shows Markdown source, and every other line shows a live preview. A table shows its source when the cursor moves into it.
+- Supported elements: headings, bold and italic, inline code, code blocks, checkboxes, field badges, links, images, tables, blockquotes and horizontal rules.
+- Type `@` to open completion in English or Chinese, for example `@tomorrow`, `@remind tomorrow 9am`, `@every monday`, `@high priority` or `@明天`. Use the arrow keys to choose, Enter to accept and Escape to cancel.
+- Dropping or pasting an image copies it into the vault's `attachments/` folder and inserts a relative path. The original image isn't moved. Clicking a link to a local file opens it in its default app. This works only for files inside the vault, and executables, `.app` bundles and similar files are refused. `#heading` links jump to that heading.
+- Light and dark appearance follow the system. The colour of a checkbox ring shows the task's priority: red for high, yellow for medium, blue-grey for low.
+- The search box works with input methods such as Chinese pinyin. Your input is kept while you compose, and results update after you pick a candidate. During composition, Escape goes to the input method; otherwise it clears the search.
 
-保存失败时主区域顶部会出现提示条，可重试、另存副本或放弃本地修改。保存采用临时文件加重命名，保留扩展属性、ACL 和创建日期；硬链接会断开。
+### External changes and conflicts
 
-清单删除进入系统废纸篓。没有内置同步、备份或版本历史；请自行备份任务文件夹。
+The app watches the vault with FSEvents and rereads only the files that changed. Events that can't be matched to individual files, such as renaming or moving a folder, trigger a full reload.
 
-### 提醒
+If the editor has no unsaved edits, outside changes load automatically. If it does have edits, autosave pauses and the app asks whether to keep your version or the one on disk. It never merges the two by itself. Every write is checked against the file on disk on the Rust side. If someone else changed the file in the meantime, the app treats it as a conflict instead of overwriting it.
 
-提醒通过 `UNUserNotificationCenter` 预先注册；系统负责已注册提醒的送达，不需要应用保持运行。系统只保留最近 64 条，应用按时间取最近的 64 条注册。重复任务的下一次提醒要在完成当前实例、生成新实例后注册；退出前会再同步一次（最多等待 2 秒）。
+If a save fails, a bar appears at the top of the main area with Retry (重试), Save a Copy (另存副本…) and Discard Local Changes (放弃本地修改). Saves write a temporary file and then rename it over the original. Extended attributes, ACLs and the creation date are kept, but hard links are broken.
 
-首次使用需要允许通知。若拒绝，请在“系统设置 → 通知 → Tasks”中开启后重新启动应用。系统拒绝通知时，应用会报告排程错误，不会把未注册的提醒当作成功。
+Deleted lists go to the system Trash. There is no built-in sync, backup or version history, so back up your task folder yourself.
 
-通知权限和系统专注模式会影响提醒显示。
+### Reminders
 
-### 导出
+Reminders are registered ahead of time with `UNUserNotificationCenter`. The system delivers registered reminders, so the app doesn't need to keep running. The system keeps only 64 pending reminders per app, so the app registers the 64 soonest. The next reminder of a recurring task is registered after you complete the current instance and the new one is created. Reminders are synced once more before the app quits, with a wait of up to 2 seconds.
 
-通过当前清单右上角导出按钮或 File 菜单导出，保存位置由系统对话框选择：
+You need to allow notifications the first time. If you said no, turn them on in System Settings → Notifications → Tasks and restart the app. If the system refuses notifications, the app reports a scheduling error instead of treating the reminders as registered.
 
-- **PDF**：系统 WebKit 排版，A4 自动分页；导出失败时保留原文件。
-- **HTML**：本地图片内嵌，保留远程图片 URL，相对链接按导出位置重新计算；个别图片读取失败时保留原链接并提示。
-- **Markdown**：副本中的相对链接按导出位置重新计算；图片仍在原任务库，不会另复制一套附件。
+Notification permissions and Focus modes affect whether and how reminders appear.
 
-### 快捷键
+### Export
 
-| 快捷键 | 操作 |
+To export, use the export button at the top right of the current list or the File menu. You pick where to save in a system dialog.
+
+- **PDF**: laid out by the system's WebKit on A4 pages with automatic page breaks. If the export fails, any existing file at that location is left as it was.
+- **HTML**: local images are embedded, remote image URLs are kept, and relative links are rewritten for the new location. If some images can't be read, their original links are kept and you get a notice.
+- **Markdown**: relative links in the copy are rewritten for the new location. Images stay in the original vault and aren't copied.
+
+### Keyboard shortcuts
+
+| Shortcut | Action |
 | --- | --- |
-| `⌘N` | 新建清单 |
-| `⌘⇧N` | 新建文件夹 |
-| `⌘F` | 全文搜索 |
-| `⌘↩` | 完成 / 取消当前任务 |
-| `⌘1` / `⌘2` | 今天 / 即将到期 |
-| `⌘3` / `⌘4` / `⌘5` | 标签 / 已完成 / 清单 |
-| `⌘⇧E` | 当前清单导出 PDF |
-| `⌘Z` / `⌘⇧Z` | 编辑器撤销 / 重做 |
+| `⌘N` | New list |
+| `⌘⇧N` | New folder |
+| `⌘F` | Search all lists |
+| `⌘↩` | Mark the current task done or not done |
+| `⌘1` / `⌘2` | Today / Upcoming |
+| `⌘3` / `⌘4` / `⌘5` | Tags / Done / Lists |
+| `⌘⇧E` | Export the current list as PDF |
+| `⌘Z` / `⌘⇧Z` | Undo / redo in the editor |
 
-关闭窗口会隐藏窗口，点击 Dock 图标可重新打开；`⌘Q`、Dock 退出和注销都会先保存再退出，保存失败时取消退出并提示。
+Closing the window hides it; click the Dock icon to bring it back. `⌘Q`, Quit from the Dock and logout all save before quitting. If saving fails, the app stays open and tells you.
 
-## 安全
+## Security
 
-前端只能通过 Rust 命令访问文件，所有路径都限制在当前任务库内（含符号链接检查）。图片经自定义 `vaultfile://` 协议按请求时的任务库提供；导出只能写入用户在对话框中选择的路径。启用了严格的 CSP。
+The frontend can reach files only through Rust commands, and every path must be inside the current vault, with symlinks checked. Images are served through a custom `vaultfile://` protocol from whichever vault is open when they're requested. Exports can only be written to the path you chose in the dialog. A strict CSP is in place.
 
-## 验证
+## Verification
 
 ```sh
 npm test
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-当前验证通过 301 个 TypeScript 测试和 17 个 Rust 测试。核心测试覆盖 Markdown 解析与字段修改、CRLF、代码块、取消状态、块引用、子任务联动、重复日期平移、完成归档、日期补全、聚合查询和搜索；应用层测试覆盖换行转换、链接分类、导出链接重算和重载合并；Rust 测试覆盖路径校验、写入冲突检测、目录跳过、非 UTF-8、监听事件、提醒上限、附件白名单和创建日期保留。
+All 301 TypeScript tests and 17 Rust tests currently pass.
 
-原生应用冒烟（2026-11-22）：外部新增文件和文件夹即时出现；输入后一秒内 `⌘Q` 和 AppleScript 退出均已保存内容并正常退出；CRLF 文件勾选后换行保持、归档正确；`⌘2` 等快捷键正常。
+- Core tests cover Markdown parsing and field edits, CRLF, code blocks, cancelled tasks, block references, completing parents and subtasks together, moving recurrence dates, archiving completed tasks, date completion, aggregate queries and search.
+- App-layer tests cover line-ending conversion, link classification, rewriting links on export and merging on reload.
+- Rust tests cover path checks, detecting write conflicts, skipping directories, non-UTF-8 files, watcher events, the reminder limit, the attachment allowlist and keeping the creation date.
 
-本机验证时系统返回了 `Notifications are not allowed for this application`，因此**尚未验证通知实际送达**，也未验证注销时的退出流程。生产构建有非阻塞的 JavaScript chunk 超过 500 kB 提示。
+Native app smoke test (2026-11-22):
 
-## 代码布局
+- Files and folders added from outside showed up right away.
+- Quitting with `⌘Q` or via AppleScript within a second of typing saved the content and exited normally.
+- Checking a task in a CRLF file kept the line endings and archived the task correctly.
+- Shortcuts such as `⌘2` worked.
 
-- `src/core/`：不依赖 UI 的解析、任务变更、日期与查询逻辑。
-- `src/editor/`：CodeMirror 实时预览、图片、徽章和补全。
-- `src/app/`：任务库索引、编辑会话、冲突处理、视图和导出转换。
-- `src-tauri/src/`：文件系统与路径校验（`vault.rs`、`tracker.rs`）、FSEvents（`watcher.rs`）、系统通知、原生菜单与退出拦截（`menu.rs`、`quit.rs`）、导出（`export.rs`、`pdf.rs`）和 `vaultfile://` 协议。
+During local testing the system returned `Notifications are not allowed for this application`, so **notification delivery hasn't been tested yet**. The quit flow on logout hasn't been tested either. The production build shows a harmless warning that a JavaScript chunk is larger than 500 kB.
+
+## Code layout
+
+- `src/core/`: parsing, task edits, dates and queries, independent of the UI.
+- `src/editor/`: CodeMirror live preview, images, badges and completion.
+- `src/app/`: vault index, editing sessions, conflict handling, views and export conversion.
+- `src-tauri/src/`: file system and path checks (`vault.rs`, `tracker.rs`), FSEvents (`watcher.rs`), system notifications, the native menu and quit handling (`menu.rs`, `quit.rs`), export (`export.rs`, `pdf.rs`) and the `vaultfile://` protocol.
